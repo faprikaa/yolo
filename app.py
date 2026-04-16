@@ -552,8 +552,8 @@ def render_training_tab(
 ) -> None:
     st.subheader("Export dan Training YOLO")
     st.write(
-        "Tab ini meng-export anotasi Label Studio ke format YOLO, menyiapkan `data.yaml`, "
-        "lalu menjalankan training Ultralytics langsung dari Streamlit."
+        "Tab ini bisa memakai ZIP export YOLO yang di-upload manual atau export langsung via API Label Studio, "
+        "menyiapkan `data.yaml`, lalu menjalankan training Ultralytics langsung dari Streamlit."
     )
 
     st.caption(f"Folder dataset siap train: {config.dataset_dir}")
