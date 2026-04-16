@@ -1,17 +1,35 @@
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from xml.sax.saxutils import escape
-
-import requests
 
 from yolo_dashboard.yolo_inference import Detection
 
 
 class LabelStudioError(RuntimeError):
     """Raised when Label Studio integration fails."""
+
+
+@dataclass(frozen=True)
+class LabelStudioProject:
+    id: int
+    title: str
+    description: str
+
+
+@dataclass(frozen=True)
+class LabelStudioExportArtifact:
+    project_id: int
+    project_title: str
+    export_id: int
+    archive_path: Path
+    export_type: str
+    created_at: str
 
 
 def build_label_config(labels: list[str]) -> str:
@@ -132,76 +150,289 @@ def build_task_payload(
 
 
 class LabelStudioClient:
-    def __init__(self, base_url: str, api_key: str, timeout: int = 30) -> None:
+    def __init__(self, base_url: str, api_key: str) -> None:
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Token {api_key}",
-                "Content-Type": "application/json",
-            }
-        )
+        self.api_key = api_key.strip()
+        if not self.base_url:
+            raise LabelStudioError("Label Studio URL wajib diisi.")
+        if not self.api_key:
+            raise LabelStudioError("Label Studio API key wajib diisi.")
+        self.client = self._create_sdk_client()
 
-    def _request(
-        self,
-        method: str,
-        endpoint: str,
-        expected_statuses: tuple[int, ...] = (200, 201),
-        **kwargs: Any,
-    ) -> Any:
-        response = self.session.request(
-            method=method,
-            url=f"{self.base_url}{endpoint}",
-            timeout=self.timeout,
-            **kwargs,
-        )
-        if response.status_code not in expected_statuses:
-            raise LabelStudioError(
-                f"Label Studio API error {response.status_code}: {response.text}"
-            )
+    def list_projects(self) -> list[LabelStudioProject]:
+        try:
+            projects = self.client.projects.list()
+        except Exception as error:
+            raise LabelStudioError(f"Gagal mengambil daftar project Label Studio: {error}") from error
 
-        if not response.content:
-            return {}
-
-        content_type = response.headers.get("Content-Type", "")
-        if "application/json" in content_type:
-            return response.json()
-        return response.text
-
-    def list_projects(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/api/projects/")
-        if isinstance(response, dict) and "results" in response:
-            return list(response["results"])
-        if isinstance(response, list):
-            return response
-        return []
+        normalized_projects = [
+            self._normalize_project(project)
+            for project in self._as_list(projects)
+        ]
+        return sorted(normalized_projects, key=lambda project: project.title.casefold())
 
     def get_or_create_project(
         self,
         title: str,
         labels: list[str],
         description: str = "",
-    ) -> dict[str, Any]:
-        projects = self.list_projects()
-        for project in projects:
-            if str(project.get("title", "")).strip() == title.strip():
+    ) -> LabelStudioProject:
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise LabelStudioError("Nama project Label Studio wajib diisi.")
+
+        for project in self.list_projects():
+            if project.title.strip() == normalized_title:
                 return project
 
-        payload = {
-            "title": title,
-            "description": description,
-            "label_config": build_label_config(labels),
-            "show_instruction": True,
-        }
-        return self._request("POST", "/api/projects/", json=payload)
+        try:
+            project = self.client.projects.create(
+                title=normalized_title,
+                description=description,
+                label_config=build_label_config(labels),
+                show_instruction=True,
+            )
+        except Exception as error:
+            raise LabelStudioError(f"Gagal membuat project Label Studio: {error}") from error
+
+        return self._normalize_project(project)
 
     def import_tasks(self, project_id: int, tasks: list[dict[str, Any]]) -> Any:
         if not tasks:
             raise LabelStudioError("Tidak ada task yang akan diimport ke Label Studio.")
-        return self._request(
-            "POST",
-            f"/api/projects/{project_id}/import?commit_to_project=true&return_task_ids=true",
-            expected_statuses=(200, 201, 202),
-            json=tasks,
+
+        try:
+            return self.client.projects.import_tasks(id=project_id, request=tasks)
+        except Exception as error:
+            raise LabelStudioError(f"Gagal import task ke Label Studio: {error}") from error
+
+    def export_project_to_archive(
+        self,
+        project_id: int,
+        export_dir: Path,
+        export_type: str = "YOLO",
+        download_resources: bool = True,
+        timeout_seconds: int = 300,
+        poll_interval_seconds: float = 1.0,
+    ) -> LabelStudioExportArtifact:
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_type_name = export_type.upper()
+
+        project = self._get_project(project_id)
+        snapshot_title = (
+            f"Streamlit {export_type_name} export "
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
         )
+        try:
+            export_job = self.client.projects.exports.create(
+                id=project_id,
+                title=snapshot_title,
+            )
+        except Exception as error:
+            raise LabelStudioError(f"Gagal membuat export snapshot: {error}") from error
+
+        export_id = int(self._read_attr(export_job, "id"))
+        self._wait_for_export_completion(
+            project_id=project_id,
+            export_id=export_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+        try:
+            conversion = self.client.projects.exports.convert(
+                id=project_id,
+                export_pk=export_id,
+                export_type=export_type_name,
+                download_resources=download_resources,
+            )
+        except TypeError:
+            try:
+                conversion = self.client.projects.exports.convert(
+                    id=project_id,
+                    export_pk=export_id,
+                    export_type=export_type_name,
+                )
+            except Exception as error:
+                raise LabelStudioError(
+                    f"Gagal memulai konversi export {export_type_name}: {error}"
+                ) from error
+        except Exception as error:
+            raise LabelStudioError(f"Gagal memulai konversi export {export_type_name}: {error}") from error
+
+        converted_format_id = self._read_attr(conversion, "converted_format")
+        self._wait_for_conversion_completion(
+            project_id=project_id,
+            export_id=export_id,
+            export_type=export_type_name,
+            converted_format_id=converted_format_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+        archive_path = export_dir / (
+            f"label_studio_project_{project_id}_{export_type_name.lower()}_{_timestamp_slug()}.zip"
+        )
+        try:
+            with archive_path.open("wb") as output_file:
+                for chunk in self.client.projects.exports.download(
+                    id=project_id,
+                    export_pk=export_id,
+                    export_type=export_type_name,
+                    request_options={"chunk_size": 1024 * 1024},
+                ):
+                    output_file.write(chunk)
+        except Exception as error:
+            raise LabelStudioError(f"Gagal mengunduh archive export {export_type_name}: {error}") from error
+
+        return LabelStudioExportArtifact(
+            project_id=project_id,
+            project_title=project.title,
+            export_id=export_id,
+            archive_path=archive_path,
+            export_type=export_type_name,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _create_sdk_client(self) -> Any:
+        try:
+            from label_studio_sdk import LabelStudio
+        except ImportError as error:
+            raise LabelStudioError(
+                "Package `label-studio-sdk` belum terpasang. "
+                "Install dependency project dulu dengan `pip install -r requirements.txt`."
+            ) from error
+
+        try:
+            return LabelStudio(base_url=self.base_url, api_key=self.api_key)
+        except Exception as error:
+            raise LabelStudioError(f"Gagal menginisialisasi Label Studio SDK: {error}") from error
+
+    def _get_project(self, project_id: int) -> LabelStudioProject:
+        try:
+            project = self.client.projects.get(id=project_id)
+        except Exception as error:
+            raise LabelStudioError(f"Gagal mengambil detail project {project_id}: {error}") from error
+        return self._normalize_project(project)
+
+    def _normalize_project(self, project: Any) -> LabelStudioProject:
+        return LabelStudioProject(
+            id=int(self._read_attr(project, "id")),
+            title=str(self._read_attr(project, "title", "")),
+            description=str(self._read_attr(project, "description", "")),
+        )
+
+    def _as_list(self, payload: Any) -> list[Any]:
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, tuple):
+            return list(payload)
+        if isinstance(payload, dict):
+            if isinstance(payload.get("results"), list):
+                return list(payload["results"])
+            if isinstance(payload.get("items"), list):
+                return list(payload["items"])
+            return []
+
+        results = self._read_attr(payload, "results")
+        if isinstance(results, list):
+            return list(results)
+        items = self._read_attr(payload, "items")
+        if isinstance(items, list):
+            return list(items)
+
+        try:
+            return list(payload)
+        except TypeError:
+            return []
+
+    def _wait_for_export_completion(
+        self,
+        project_id: int,
+        export_id: int,
+        timeout_seconds: int,
+        poll_interval_seconds: float,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                job = self.client.projects.exports.get(id=project_id, export_pk=export_id)
+            except Exception as error:
+                raise LabelStudioError(f"Gagal mengecek status export snapshot: {error}") from error
+
+            status = str(self._read_attr(job, "status", "")).lower()
+            if status == "completed":
+                return
+            if status == "failed":
+                raise LabelStudioError("Export snapshot Label Studio gagal diproses.")
+            time.sleep(poll_interval_seconds)
+
+        raise LabelStudioError("Export snapshot Label Studio timeout.")
+
+    def _wait_for_conversion_completion(
+        self,
+        project_id: int,
+        export_id: int,
+        export_type: str,
+        converted_format_id: Any,
+        timeout_seconds: int,
+        poll_interval_seconds: float,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        normalized_export_type = export_type.upper()
+        while time.monotonic() < deadline:
+            try:
+                job = self.client.projects.exports.get(id=project_id, export_pk=export_id)
+            except Exception as error:
+                raise LabelStudioError(f"Gagal mengecek status konversi export: {error}") from error
+
+            converted_formats = list(self._read_attr(job, "converted_formats", []) or [])
+            current_format = self._find_converted_format(
+                converted_formats=converted_formats,
+                converted_format_id=converted_format_id,
+                export_type=normalized_export_type,
+            )
+            if current_format is not None:
+                status = str(self._read_attr(current_format, "status", "")).lower()
+                if status == "completed":
+                    return
+                if status == "failed":
+                    raise LabelStudioError(
+                        f"Konversi export {normalized_export_type} di Label Studio gagal."
+                    )
+
+            time.sleep(poll_interval_seconds)
+
+        raise LabelStudioError(f"Konversi export {normalized_export_type} timeout.")
+
+    def _find_converted_format(
+        self,
+        converted_formats: list[Any],
+        converted_format_id: Any,
+        export_type: str,
+    ) -> Any | None:
+        normalized_id = str(converted_format_id) if converted_format_id is not None else None
+        normalized_export_type = export_type.upper()
+
+        for item in converted_formats:
+            item_id = self._read_attr(item, "id")
+            if normalized_id is not None and str(item_id) == normalized_id:
+                return item
+
+        for item in converted_formats:
+            item_export_type = str(self._read_attr(item, "export_type", "")).upper()
+            if item_export_type == normalized_export_type:
+                return item
+        return None
+
+    @staticmethod
+    def _read_attr(payload: Any, key: str, default: Any = None) -> Any:
+        if isinstance(payload, dict):
+            return payload.get(key, default)
+        return getattr(payload, key, default)
+
+
+def _timestamp_slug() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

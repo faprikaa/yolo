@@ -1,11 +1,13 @@
 # Tutorial Dashboard Streamlit + YOLO + Label Studio
 
-Tutorial ini menjelaskan cara menjalankan dashboard yang bisa:
+Tutorial ini menjelaskan cara menjalankan dashboard yang sekarang bisa:
 
 1. capture otomatis dari kamera
 2. menjalankan inference YOLO
-3. mengirim gambar hasil capture ke Label Studio
-4. mengirim pre-label hasil deteksi YOLO ke Label Studio
+3. sync image ke Label Studio memakai SDK resmi
+4. export dataset YOLO langsung dari Streamlit
+5. training ulang model YOLO langsung dari Streamlit
+6. memilih model base YOLO atau model hasil training sendiri
 
 ## 1. Persiapan
 
@@ -17,20 +19,28 @@ Install dependency:
 pip install -r requirements-dev.txt
 ```
 
-Kalau kamu punya model YOLO sendiri, siapkan file `.pt` seperti `best.pt`.
+Dependency penting untuk workflow baru:
+
+- `label-studio` untuk server labeling via pip
+- `label-studio-sdk` untuk create project, import task, dan export dataset
+- `ultralytics` untuk inference dan training YOLO
 
 ## 2. Konfigurasi environment
 
-Salin file `.env.example` menjadi `.env`, lalu isi sesuai kebutuhan:
+Salin `.env.example` menjadi `.env`.
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
+Contoh isi `.env`:
+
 ```env
 YOLO_MODEL_PATH=yolo11n.pt
 CAPTURE_DIR=data/captures
 EXPORT_DIR=data/exports
+DATASET_DIR=data/datasets
+YOLO_RUNS_DIR=data/runs
 LABEL_STUDIO_URL=http://localhost:8080
 LABEL_STUDIO_API_KEY=isi_api_key_label_studio
 LABEL_STUDIO_PROJECT_TITLE=YOLO Camera Dashboard
@@ -39,26 +49,51 @@ LABEL_STUDIO_LOCAL_ROOT=data
 
 Catatan:
 
-- `YOLO_MODEL_PATH` bisa diarahkan ke model custom, misalnya `models/best.pt`
-- `LABEL_STUDIO_LOCAL_ROOT` harus menjadi parent folder dari image capture
-- default project ini menyimpan image di `data/captures`, jadi root `data` sudah cocok
+- `YOLO_MODEL_PATH` adalah model default saat app pertama kali dibuka.
+- `DATASET_DIR` dipakai untuk dataset hasil export Label Studio yang sudah disiapkan ke format Ultralytics.
+- `YOLO_RUNS_DIR` dipakai untuk output training seperti `best.pt` dan `last.pt`.
+- `LABEL_STUDIO_LOCAL_ROOT` harus menjadi parent folder dari image capture.
 
-## 3. Menjalankan dashboard
+## 3. Menjalankan Label Studio via pip
 
-Jalankan perintah berikut:
+Project ini tidak lagi mengandalkan Docker sebagai workflow utama.
+
+Jalankan Label Studio seperti ini:
+
+```powershell
+$env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED="true"
+$env:LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="$PWD\data"
+label-studio start
+```
+
+Penjelasan:
+
+- `LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true` mengaktifkan local file serving
+- `LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT` harus menunjuk ke root folder data project
+- image capture ada di `data/captures`, jadi root `data` sudah benar
+
+## 4. Jalankan Streamlit
 
 ```bash
 streamlit run app.py
 ```
 
-Setelah browser terbuka:
+## 5. Pilih model YOLO
 
-- isi `Path model YOLO`
-- atur confidence dan IoU threshold
-- jika perlu, isi filter label seperti `person, helmet`
-- aktifkan `Auto capture kamera`
+Di sidebar sekarang ada selector model:
 
-## 4. Menjalankan live detection
+- `Base YOLO` untuk model bawaan seperti `yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, `yolo11l.pt`, `yolo11x.pt`
+- `Model hasil training` untuk memilih file `.pt` yang ada di `data/runs`
+- `Path custom` kalau kamu punya model di lokasi lain
+
+Model aktif ini dipakai untuk:
+
+- live inference
+- image inference
+- pre-label ke Label Studio
+- starting weights saat training dari tab `Training`
+
+## 6. Live Camera
 
 Masuk ke tab `Live Camera`.
 
@@ -66,51 +101,22 @@ Langkahnya:
 
 1. klik `START` pada komponen kamera
 2. izinkan browser mengakses webcam
-3. hasil deteksi akan tampil di video stream
-4. frame terakhir yang diproses juga tampil di dashboard
-5. capture otomatis akan masuk ke folder `data/captures/`
+3. aktifkan `Auto capture kamera` jika ingin frame tersimpan otomatis
+4. review preview dan tabel deteksi
 
-Kalau mau simpan manual:
+Semua capture masuk ke `data/captures/`.
 
-- klik `Simpan snapshot sekarang`
-
-## 5. Inference dari image upload
+## 7. Image Inference
 
 Masuk ke tab `Image Inference`.
 
-Di tab ini kamu bisa:
+Di sini kamu bisa:
 
-- upload file JPG, JPEG, atau PNG
-- lihat bounding box dan confidence
-- simpan image tersebut ke folder capture agar bisa ikut dikirim ke Label Studio
+- upload JPG/JPEG/PNG
+- lihat bounding box hasil inference
+- simpan image ke folder capture agar bisa ikut masuk ke Label Studio
 
-Ini berguna kalau kamu ingin uji model tanpa membuka live camera.
-
-## 6. Menjalankan Label Studio
-
-Supaya Label Studio bisa membaca hasil capture, jalankan dengan local files serving aktif.
-
-### Opsi Docker
-
-```powershell
-docker run -it -p 8080:8080 -v ${PWD}/data:/label-studio/files --env LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true --env LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/files heartexlabs/label-studio:latest label-studio
-```
-
-Penjelasan:
-
-- host folder `data` di-mount ke `/label-studio/files`
-- Label Studio akan membaca image lewat URL `/data/local-files/?d=...`
-- karena image disimpan di `data/captures`, maka path relatifnya valid
-
-### Ambil API Key Label Studio
-
-1. buka Label Studio
-2. login
-3. masuk ke profile atau account settings
-4. copy API token
-5. simpan di `.env` atau isi langsung di tab `Label Studio`
-
-## 7. Sync capture ke Label Studio
+## 8. Sync ke Label Studio
 
 Masuk ke tab `Label Studio`.
 
@@ -121,105 +127,121 @@ Isi field berikut:
 - `Nama project Label Studio`
 - `Document root Label Studio`
 
-Lalu klik `Sync ke Label Studio`.
+Opsi tambahan:
 
-Yang terjadi setelah klik sync:
+- `Kirim prediksi YOLO sebagai pre-label`
+- `Import ulang semua capture`
 
-1. dashboard cek project Label Studio berdasarkan nama
-2. kalau belum ada, project baru dibuat otomatis
-3. label config dibuat dari class model YOLO
-4. setiap image di `data/captures/` diubah jadi task Label Studio
-5. prediksi YOLO ikut dikirim sebagai pre-label
-6. file manifest JSON juga disimpan ke `data/exports/`
+Saat tombol sync ditekan, dashboard akan:
 
-## 8. Melabeli data di Label Studio
+1. mengambil class names dari model YOLO aktif
+2. membuat project Label Studio kalau belum ada
+3. mengubah capture menjadi task Label Studio
+4. mengirim prediction sebagai pre-label jika diaktifkan
+5. menyimpan manifest task di `data/exports/`
 
-Setelah task masuk:
+## 9. Melabeli data
 
-1. buka project di Label Studio
-2. pilih task
-3. review pre-label dari YOLO
-4. koreksi bounding box jika perlu
-5. simpan annotation
-
-Dengan alur ini kamu bisa mempercepat labeling karena box awal sudah dihasilkan model.
-
-## 9. Export hasil labeling untuk YOLO training
-
-Sesudah labeling selesai:
+Sesudah task masuk:
 
 1. buka project di Label Studio
-2. pilih menu export
-3. pilih format `YOLO`
-4. download hasil export
+2. review bounding box hasil pre-label
+3. koreksi bila perlu
+4. simpan annotation
 
-Hasil export itu bisa dipakai lagi untuk training model YOLO yang lebih bagus.
+## 10. Export YOLO dan training langsung dari Streamlit
 
-## 10. Workflow yang disarankan
+Masuk ke tab `Training`.
 
-Workflow paling enak biasanya seperti ini:
+Workflow barunya:
 
-1. pakai tab `Live Camera` untuk kumpulkan data real
-2. sync semua capture ke Label Studio
-3. review dan koreksi pre-label
-4. export dataset YOLO
-5. train ulang model
-6. ganti `YOLO_MODEL_PATH` ke model baru
-7. ulangi proses untuk iterasi berikutnya
+1. isi `Label Studio URL` dan `API Key`
+2. pilih project Label Studio
+3. atur `Proporsi train split`
+4. klik `Export YOLO dan siapkan dataset`
+5. dashboard akan:
+   - download archive export YOLO dari Label Studio
+   - extract archive ke folder sementara
+   - menyiapkan struktur `images/train`, `images/val`, `labels/train`, `labels/val`
+   - membuat `data.yaml`
+   - menyimpan dataset siap train ke `data/datasets/`
+6. pilih dataset yang ingin dipakai
+7. atur parameter training
+8. klik `Mulai training YOLO`
 
-## 11. Troubleshooting
+## 11. Hasil training
 
-### Kamera tidak muncul
+Output training masuk ke `data/runs/`.
 
-- pastikan browser diizinkan mengakses webcam
-- coba reload halaman Streamlit
-- pastikan tidak ada aplikasi lain yang sedang mengunci kamera
+File penting:
 
-### Model YOLO gagal dibuka
+- `weights/best.pt`
+- `weights/last.pt`
+- `results.csv`
 
-- cek path model di sidebar
-- kalau pakai model custom, pastikan file `.pt` benar
-- kalau pakai model bawaan seperti `yolo11n.pt`, koneksi internet mungkin dibutuhkan saat download pertama
+Setelah training selesai:
 
-### Task masuk ke Label Studio tapi image tidak tampil
+- model baru otomatis terdeteksi oleh selector sidebar pada rerun berikutnya
+- kamu bisa klik tombol `Pakai best.pt sebagai model aktif`
+- atau pilih sendiri dari opsi `Model hasil training`
 
-- biasanya `LABEL_STUDIO_LOCAL_ROOT` tidak cocok dengan folder yang di-mount ke container
-- pastikan `data/` di host memang di-mount ke `/label-studio/files`
-- pastikan `Document root Label Studio` di dashboard menunjuk ke folder yang sama
+## 12. Struktur dataset hasil export
 
-### Task dobel masuk ke Label Studio
+Dataset siap train yang dibangun dashboard akan berbentuk seperti ini:
 
-- dashboard menyimpan index lokal di `data/exports/label_studio_sync_index.json`
-- kalau ingin kirim ulang semua image, centang `Import ulang semua capture`
+```text
+data/datasets/prepared_yolo_<timestamp>/
+  data.yaml
+  dataset_metadata.json
+  images/train/
+  images/val/
+  labels/train/
+  labels/val/
+```
 
-## 12. Menjalankan test
+Tujuan langkah ini adalah membuat export YOLO dari Label Studio langsung kompatibel untuk `YOLO(...).train(...)` di Ultralytics.
 
-Jalankan:
+## 13. Menjalankan test
 
 ```bash
 pytest
 ```
 
-Test yang ada saat ini fokus ke:
+Test saat ini mencakup:
 
-- pembentukan task Label Studio
-- konversi path local files
+- pembentukan payload task Label Studio
+- konversi local file URL
 - penyimpanan capture dan metadata
+- persiapan dataset YOLO dari ZIP export Label Studio
+- discovery model hasil training
 
-## 13. File penting
+## 14. Troubleshooting
 
-- `app.py` untuk dashboard utama
-- `src/yolo_dashboard/yolo_inference.py` untuk loading model dan deteksi
-- `src/yolo_dashboard/webrtc_processor.py` untuk live camera callback
-- `src/yolo_dashboard/label_studio.py` untuk integrasi API Label Studio
+### Model base YOLO gagal dipakai
+
+- cek koneksi internet untuk download weight bawaan saat pertama kali dipakai
+- kalau offline, gunakan model `.pt` yang sudah ada lokal
+
+### Capture berhasil sync tapi image tidak tampil di Label Studio
+
+- pastikan `LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT` cocok dengan folder `data`
+- pastikan field `Document root Label Studio` di tab `Label Studio` menunjuk ke folder yang sama
+
+### Export berhasil tapi dataset tidak bisa ditrain
+
+- pastikan project Label Studio sudah punya annotation yang tersimpan
+- cek jumlah `Labeled images` di tab `Training`
+- kalau nol, berarti export belum berisi label yang valid
+
+### Model hasil training tidak muncul di sidebar
+
+- pastikan training benar-benar menghasilkan file `.pt` di `data/runs`
+- lakukan rerun Streamlit setelah training selesai
+
+## 15. File penting
+
+- `app.py` untuk dashboard Streamlit
+- `src/yolo_dashboard/label_studio.py` untuk SDK Label Studio
+- `src/yolo_dashboard/training.py` untuk export preparation dan training YOLO
+- `src/yolo_dashboard/yolo_inference.py` untuk loading model dan inference
 - `src/yolo_dashboard/storage.py` untuk simpan capture dan metadata
-
-## 14. Pengembangan lanjut
-
-Kalau mau dilanjutkan, fitur berikut cocok ditambah:
-
-- export YOLO langsung dari dashboard
-- training trigger dari dashboard
-- filtering berdasarkan confidence per class
-- batch import video
-- statistik dataset dan annotation progress

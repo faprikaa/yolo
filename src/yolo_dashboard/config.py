@@ -15,6 +15,8 @@ class AppConfig:
     default_model_path: str
     capture_dir: Path
     export_dir: Path
+    dataset_dir: Path
+    training_runs_dir: Path
     sync_index_path: Path
     label_studio_url: str
     label_studio_api_key: str
@@ -25,6 +27,8 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         capture_dir = Path(os.getenv("CAPTURE_DIR", "data/captures")).resolve()
         export_dir = Path(os.getenv("EXPORT_DIR", "data/exports")).resolve()
+        dataset_dir = Path(os.getenv("DATASET_DIR", "data/datasets")).resolve()
+        training_runs_dir = Path(os.getenv("YOLO_RUNS_DIR", "data/runs")).resolve()
         local_root = Path(
             os.getenv("LABEL_STUDIO_LOCAL_ROOT", str(capture_dir.parent))
         ).resolve()
@@ -32,6 +36,8 @@ class AppConfig:
             default_model_path=os.getenv("YOLO_MODEL_PATH", "yolo11n.pt"),
             capture_dir=capture_dir,
             export_dir=export_dir,
+            dataset_dir=dataset_dir,
+            training_runs_dir=training_runs_dir,
             sync_index_path=export_dir / "label_studio_sync_index.json",
             label_studio_url=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"),
             label_studio_api_key=os.getenv("LABEL_STUDIO_API_KEY", ""),
@@ -45,4 +51,6 @@ class AppConfig:
     def ensure_directories(self) -> None:
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         self.export_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
+        self.training_runs_dir.mkdir(parents=True, exist_ok=True)
         self.label_studio_local_root.mkdir(parents=True, exist_ok=True)
