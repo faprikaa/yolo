@@ -155,6 +155,13 @@ Masuk ke tab `Training`.
 
 Workflow barunya:
 
+Opsi sumber dataset:
+
+- `Upload ZIP` kalau kamu sudah export YOLO manual dari UI Label Studio
+- `Export via API` kalau ingin dashboard yang menarik export langsung dari project Label Studio
+
+Contoh workflow `Export via API`:
+
 1. isi `Label Studio URL` dan `API Key`
 2. pilih project Label Studio
 3. atur `Proporsi train split`
