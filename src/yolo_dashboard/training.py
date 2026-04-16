@@ -17,6 +17,11 @@ DEFAULT_BASE_MODELS = (
     "yolo11m.pt",
     "yolo11l.pt",
     "yolo11x.pt",
+    "yolov8n.pt",
+    "yolov8s.pt",
+    "yolov8m.pt",
+    "yolov8l.pt",
+    "yolov8x.pt",
 )
 
 

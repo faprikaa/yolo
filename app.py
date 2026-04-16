@@ -25,6 +25,7 @@ from yolo_dashboard.storage import (
     get_unsynced_captures,
     list_capture_artifacts,
     mark_captures_synced,
+    save_label_studio_export_archive,
     save_capture,
     save_tasks_manifest,
 )
@@ -582,120 +583,174 @@ def render_training_tab(
                 st.session_state[TRAINED_MODEL_KEY] = str(Path(best_model_path).resolve())
                 st.rerun()
 
-    label_studio_url = st.text_input(
-        "Label Studio URL",
-        key=TRAINING_URL_KEY,
-    )
-    api_key = st.text_input(
-        "Label Studio API Key",
-        key=TRAINING_API_KEY_KEY,
-        type="password",
-    )
+    st.markdown("#### Sumber Export Label Studio")
+    upload_tab, api_tab = st.tabs(["Upload ZIP", "Export via API"])
 
-    projects, project_error = try_list_label_studio_projects(
-        label_studio_url=label_studio_url,
-        api_key=api_key,
-    )
-
-    selected_project_id: int
-    if project_error:
-        st.warning(project_error)
-        selected_project_id = int(
-            st.number_input(
-                "Project ID Label Studio",
-                min_value=1,
-                value=1,
-                step=1,
-            )
+    with upload_tab:
+        st.write(
+            "Upload file ZIP hasil export YOLO dari Label Studio kalau kamu sudah export manual dari UI Label Studio."
         )
-    elif projects:
-        project_lookup = {str(project.id): project for project in projects}
-        default_project_id = next(
-            (
-                str(project.id)
-                for project in projects
-                if project.title.strip() == config.label_studio_project_title.strip()
-            ),
-            str(projects[0].id),
+        uploaded_export = st.file_uploader(
+            "Upload ZIP export YOLO Label Studio",
+            type=["zip"],
+            key="label_studio_export_upload",
         )
-        if (
-            TRAINING_PROJECT_KEY not in st.session_state
-            or st.session_state[TRAINING_PROJECT_KEY] not in project_lookup
-        ):
-            st.session_state[TRAINING_PROJECT_KEY] = default_project_id
-        selected_project_key = st.selectbox(
-            "Project Label Studio",
-            options=list(project_lookup),
-            format_func=lambda value: (
-                f"{project_lookup[value].title} (ID: {project_lookup[value].id})"
-            ),
-            key=TRAINING_PROJECT_KEY,
-        )
-        selected_project_id = int(selected_project_key)
-    else:
-        st.info("Belum ada project terdeteksi. Isi project ID manual jika perlu.")
-        selected_project_id = int(
-            st.number_input(
-                "Project ID Label Studio",
-                min_value=1,
-                value=1,
-                step=1,
-            )
-        )
-
-    export_col, split_col = st.columns(2)
-    with export_col:
-        train_split = st.slider(
-            "Proporsi train split",
+        upload_train_split = st.slider(
+            "Proporsi train split dari ZIP upload",
             min_value=0.50,
             max_value=0.95,
             value=0.80,
             step=0.05,
-        )
-    with split_col:
-        export_timeout = st.number_input(
-            "Timeout export (detik)",
-            min_value=60,
-            max_value=1800,
-            value=300,
-            step=30,
+            key="upload_train_split",
         )
 
-    if st.button("Export YOLO dan siapkan dataset", type="primary"):
-        if not label_studio_url.strip() or not api_key.strip():
-            st.error("URL dan API key Label Studio wajib diisi sebelum export.")
-        else:
-            try:
-                with st.spinner("Mengunduh export YOLO dari Label Studio..."):
-                    client = LabelStudioClient(
-                        base_url=label_studio_url,
-                        api_key=api_key,
+        if st.button("Gunakan ZIP upload", type="primary", key="prepare_uploaded_export"):
+            if uploaded_export is None:
+                st.error("Upload file ZIP hasil export Label Studio dulu.")
+            else:
+                try:
+                    with st.spinner("Menyiapkan dataset dari ZIP upload..."):
+                        archive_path = save_label_studio_export_archive(
+                            export_dir=config.export_dir,
+                            original_name=uploaded_export.name,
+                            payload=uploaded_export.getvalue(),
+                        )
+                        prepared_dataset = prepare_label_studio_yolo_dataset(
+                            archive_path=archive_path,
+                            dataset_root=config.dataset_dir,
+                            train_split=float(upload_train_split),
+                        )
+                    st.session_state[DATASET_KEY] = str(prepared_dataset.data_yaml_path.resolve())
+                    st.session_state[LAST_EXPORTED_DATASET_KEY] = {
+                        "archive_path": str(archive_path.resolve()),
+                        "dataset_dir": str(prepared_dataset.dataset_dir.resolve()),
+                        "data_yaml_path": str(prepared_dataset.data_yaml_path.resolve()),
+                    }
+                    st.success(
+                        f"ZIP upload berhasil dipakai. Dataset siap train di {prepared_dataset.dataset_dir.name}."
                     )
-                    export_artifact = client.export_project_to_archive(
-                        project_id=selected_project_id,
-                        export_dir=config.export_dir,
-                        export_type="YOLO",
-                        timeout_seconds=int(export_timeout),
-                    )
-                    prepared_dataset = prepare_label_studio_yolo_dataset(
-                        archive_path=export_artifact.archive_path,
-                        dataset_root=config.dataset_dir,
-                        train_split=float(train_split),
-                        project_id=selected_project_id,
-                    )
-                st.session_state[DATASET_KEY] = str(prepared_dataset.data_yaml_path.resolve())
-                st.session_state[LAST_EXPORTED_DATASET_KEY] = {
-                    "archive_path": str(export_artifact.archive_path.resolve()),
-                    "dataset_dir": str(prepared_dataset.dataset_dir.resolve()),
-                    "data_yaml_path": str(prepared_dataset.data_yaml_path.resolve()),
-                }
-                st.success(
-                    f"Export YOLO selesai. Dataset siap train di {prepared_dataset.dataset_dir.name}."
+                except Exception as error:  # pragma: no cover - depends on local runtime env
+                    st.error(f"Gagal memproses ZIP upload: {error}")
+
+    with api_tab:
+        label_studio_url = st.text_input(
+            "Label Studio URL",
+            key=TRAINING_URL_KEY,
+        )
+        api_key = st.text_input(
+            "Label Studio API Key",
+            key=TRAINING_API_KEY_KEY,
+            type="password",
+        )
+
+        projects, project_error = try_list_label_studio_projects(
+            label_studio_url=label_studio_url,
+            api_key=api_key,
+        )
+
+        selected_project_id: int
+        if project_error:
+            st.warning(project_error)
+            selected_project_id = int(
+                st.number_input(
+                    "Project ID Label Studio",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key="training_project_id_error",
                 )
-            except LabelStudioError as error:
-                st.error(str(error))
-            except Exception as error:  # pragma: no cover - depends on local runtime env
-                st.error(f"Gagal export dataset Label Studio: {error}")
+            )
+        elif projects:
+            project_lookup = {str(project.id): project for project in projects}
+            default_project_id = next(
+                (
+                    str(project.id)
+                    for project in projects
+                    if project.title.strip() == config.label_studio_project_title.strip()
+                ),
+                str(projects[0].id),
+            )
+            if (
+                TRAINING_PROJECT_KEY not in st.session_state
+                or st.session_state[TRAINING_PROJECT_KEY] not in project_lookup
+            ):
+                st.session_state[TRAINING_PROJECT_KEY] = default_project_id
+            selected_project_key = st.selectbox(
+                "Project Label Studio",
+                options=list(project_lookup),
+                format_func=lambda value: (
+                    f"{project_lookup[value].title} (ID: {project_lookup[value].id})"
+                ),
+                key=TRAINING_PROJECT_KEY,
+            )
+            selected_project_id = int(selected_project_key)
+        else:
+            st.info("Belum ada project terdeteksi. Isi project ID manual jika perlu.")
+            selected_project_id = int(
+                st.number_input(
+                    "Project ID Label Studio",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key="training_project_id_manual",
+                )
+            )
+
+        export_col, split_col = st.columns(2)
+        with export_col:
+            train_split = st.slider(
+                "Proporsi train split",
+                min_value=0.50,
+                max_value=0.95,
+                value=0.80,
+                step=0.05,
+                key="api_train_split",
+            )
+        with split_col:
+            export_timeout = st.number_input(
+                "Timeout export (detik)",
+                min_value=60,
+                max_value=1800,
+                value=300,
+                step=30,
+                key="api_export_timeout",
+            )
+
+        if st.button("Export YOLO dan siapkan dataset", type="primary", key="prepare_api_export"):
+            if not label_studio_url.strip() or not api_key.strip():
+                st.error("URL dan API key Label Studio wajib diisi sebelum export.")
+            else:
+                try:
+                    with st.spinner("Mengunduh export YOLO dari Label Studio..."):
+                        client = LabelStudioClient(
+                            base_url=label_studio_url,
+                            api_key=api_key,
+                        )
+                        export_artifact = client.export_project_to_archive(
+                            project_id=selected_project_id,
+                            export_dir=config.export_dir,
+                            export_type="YOLO",
+                            timeout_seconds=int(export_timeout),
+                        )
+                        prepared_dataset = prepare_label_studio_yolo_dataset(
+                            archive_path=export_artifact.archive_path,
+                            dataset_root=config.dataset_dir,
+                            train_split=float(train_split),
+                            project_id=selected_project_id,
+                        )
+                    st.session_state[DATASET_KEY] = str(prepared_dataset.data_yaml_path.resolve())
+                    st.session_state[LAST_EXPORTED_DATASET_KEY] = {
+                        "archive_path": str(export_artifact.archive_path.resolve()),
+                        "dataset_dir": str(prepared_dataset.dataset_dir.resolve()),
+                        "data_yaml_path": str(prepared_dataset.data_yaml_path.resolve()),
+                    }
+                    st.success(
+                        f"Export YOLO selesai. Dataset siap train di {prepared_dataset.dataset_dir.name}."
+                    )
+                except LabelStudioError as error:
+                    st.error(str(error))
+                except Exception as error:  # pragma: no cover - depends on local runtime env
+                    st.error(f"Gagal export dataset Label Studio: {error}")
 
     datasets = list_prepared_datasets(config.dataset_dir)
     dataset_lookup = {

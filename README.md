@@ -6,6 +6,7 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - inference YOLO dari base model atau model hasil training
 - sync image ke Label Studio memakai Python SDK resmi `label-studio-sdk`
 - menjalankan Label Studio dari instalasi `pip install label-studio`
+- upload ZIP hasil export YOLO dari Label Studio ke Streamlit
 - export anotasi Label Studio ke format YOLO langsung dari Streamlit
 - menyiapkan `data.yaml` dan training ulang model Ultralytics langsung dari Streamlit
 
@@ -16,8 +17,8 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - Inference dari image upload
 - Integrasi Label Studio via SDK resmi, bukan REST manual
 - Workflow Label Studio berbasis `pip`, bukan bergantung Docker
-- Menu training untuk export dataset YOLO, split train/val, dan start training
-- Selector model untuk base model YOLO dan model hasil training sendiri
+- Menu training untuk upload/export dataset YOLO, split train/val, dan start training
+- Selector model untuk base model YOLO11/YOLOv8 dan model hasil training sendiri
 
 ## Struktur project
 
@@ -68,7 +69,7 @@ streamlit run app.py
 2. Buka tab `Live Camera` untuk capture data.
 3. Buka tab `Label Studio` untuk sync capture ke project labeling.
 4. Review dan simpan anotasi di Label Studio.
-5. Buka tab `Training` untuk export YOLO dari Label Studio, siapkan dataset, lalu training model baru.
+5. Buka tab `Training` untuk upload ZIP export Label Studio atau export via API, siapkan dataset, lalu training model baru.
 6. Setelah training selesai, pilih `best.pt` hasil training sebagai model aktif dari sidebar atau tombol cepat di tab `Training`.
 
 Tutorial lengkap ada di [TUTORIAL.md](TUTORIAL.md).

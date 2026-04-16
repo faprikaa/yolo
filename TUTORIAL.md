@@ -82,7 +82,7 @@ streamlit run app.py
 
 Di sidebar sekarang ada selector model:
 
-- `Base YOLO` untuk model bawaan seperti `yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, `yolo11l.pt`, `yolo11x.pt`
+- `Base YOLO` untuk model bawaan seperti `yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, `yolo11l.pt`, `yolo11x.pt`, `yolov8n.pt`, `yolov8s.pt`, `yolov8m.pt`, `yolov8l.pt`, `yolov8x.pt`
 - `Model hasil training` untuk memilih file `.pt` yang ada di `data/runs`
 - `Path custom` kalau kamu punya model di lokasi lain
 

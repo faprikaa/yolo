@@ -6,6 +6,7 @@ from zipfile import ZipFile
 
 from yolo_dashboard.training import (
     discover_trained_models,
+    list_base_model_names,
     list_prepared_datasets,
     prepare_label_studio_yolo_dataset,
 )
@@ -61,3 +62,10 @@ def test_discover_trained_models_lists_latest_weights_first(tmp_path: Path) -> N
 
     assert [artifact.path for artifact in discovered_models] == [newer_model, older_model]
     assert discovered_models[0].display_name == "train_new/weights/last.pt"
+
+
+def test_base_models_include_yolo11_and_yolov8() -> None:
+    base_models = list_base_model_names()
+
+    assert "yolo11n.pt" in base_models
+    assert "yolov8n.pt" in base_models

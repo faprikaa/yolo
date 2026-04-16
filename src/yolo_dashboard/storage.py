@@ -122,6 +122,18 @@ def save_tasks_manifest(tasks: list[dict[str, Any]], export_dir: Path) -> Path:
     return manifest_path
 
 
+def save_label_studio_export_archive(
+    export_dir: Path,
+    original_name: str,
+    payload: bytes,
+) -> Path:
+    export_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(original_name).suffix or ".zip"
+    archive_path = export_dir / f"label_studio_uploaded_{_timestamp_slug()}{suffix}"
+    archive_path.write_bytes(payload)
+    return archive_path
+
+
 def load_sync_index(sync_index_path: Path) -> dict[str, list[str]]:
     return _read_json(sync_index_path, default={})
 

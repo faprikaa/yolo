@@ -10,6 +10,7 @@ from yolo_dashboard.storage import (
     load_capture_artifact,
     load_sync_index,
     mark_captures_synced,
+    save_label_studio_export_archive,
     save_capture,
 )
 from yolo_dashboard.yolo_inference import Detection
@@ -74,3 +75,17 @@ def test_mark_captures_synced_filters_existing_items(tmp_path: Path) -> None:
     )
 
     assert [artifact.image_path for artifact in pending] == [second.image_path]
+
+
+def test_save_label_studio_export_archive_writes_zip_payload(tmp_path: Path) -> None:
+    payload = b"fake-zip-content"
+
+    archive_path = save_label_studio_export_archive(
+        export_dir=tmp_path,
+        original_name="label_studio_export.zip",
+        payload=payload,
+    )
+
+    assert archive_path.exists()
+    assert archive_path.suffix == ".zip"
+    assert archive_path.read_bytes() == payload
