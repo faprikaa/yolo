@@ -18,6 +18,7 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 from yolo_dashboard.config import AppConfig
 from yolo_dashboard.label_studio import (
     LabelStudioClient,
+    LabelStudioConnectionStatus,
     LabelStudioError,
     LabelStudioProject,
     build_task_payload,
@@ -326,6 +327,15 @@ def render_training_job_status(job: TrainingJobState) -> None:
             )
 
 
+def render_label_studio_connection_status(
+    connection_status: LabelStudioConnectionStatus,
+) -> None:
+    st.success(
+        f"Koneksi ke Label Studio berhasil: {connection_status.base_url} | "
+        f"project terdeteksi: {connection_status.project_count}"
+    )
+
+
 def try_list_label_studio_projects(
     label_studio_url: str,
     api_key: str,
@@ -353,11 +363,12 @@ def render_live_camera_tab(
     auto_capture: bool,
     capture_interval: float,
 ) -> None:
-    st.subheader("Live Camera Detection")
+    st.subheader("Live Cam Inference")
     st.write(
         "Izinkan akses kamera browser, lalu klik `START` pada komponen video. "
         "Frame akan diproses dengan YOLO dan bisa disimpan otomatis ke folder capture."
     )
+    st.caption(f"Model aktif untuk live inference: {service.model_version}")
 
     context = webrtc_streamer(
         key="yolo-live-camera",
@@ -553,17 +564,34 @@ def render_label_studio_tab(
             "Import ulang semua capture, termasuk yang pernah dikirim",
             value=False,
         )
-        submitted = st.form_submit_button("Sync ke Label Studio", type="primary")
+        action_col1, action_col2 = st.columns(2)
+        with action_col1:
+            test_connection_clicked = st.form_submit_button("Test koneksi")
+        with action_col2:
+            submitted = st.form_submit_button("Sync ke Label Studio", type="primary")
 
-    if not submitted:
+    if not test_connection_clicked and not submitted:
+        render_capture_gallery(captures)
+        return
+
+    if not label_studio_url or not api_key or not project_title:
+        st.error("URL, API key, dan nama project Label Studio wajib diisi.")
+        return
+
+    try:
+        client = LabelStudioClient(base_url=label_studio_url, api_key=api_key)
+        connection_status = client.test_connection()
+        render_label_studio_connection_status(connection_status)
+    except LabelStudioError as error:
+        st.error(f"Test koneksi Label Studio gagal: {error}")
+        return
+
+    if test_connection_clicked:
         render_capture_gallery(captures)
         return
 
     if not captures:
         st.error("Belum ada capture yang bisa disinkronkan.")
-        return
-    if not label_studio_url or not api_key or not project_title:
-        st.error("URL, API key, dan nama project Label Studio wajib diisi.")
         return
 
     project_key = f"{label_studio_url.rstrip('/')}/{project_title.strip()}"
@@ -578,7 +606,6 @@ def render_label_studio_tab(
 
     try:
         labels = service.class_names
-        client = LabelStudioClient(base_url=label_studio_url, api_key=api_key)
         project = client.get_or_create_project(
             title=project_title,
             labels=labels,
