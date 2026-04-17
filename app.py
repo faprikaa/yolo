@@ -38,6 +38,7 @@ from yolo_dashboard.training import (
     discover_trained_models,
     get_resource_usage,
     get_training_job,
+    inspect_existing_yolo_dataset,
     list_base_model_names,
     list_training_device_options,
     list_prepared_datasets,
@@ -53,6 +54,7 @@ BASE_MODEL_KEY = "base_model_name"
 TRAINED_MODEL_KEY = "trained_model_path"
 CUSTOM_MODEL_KEY = "custom_model_path"
 DATASET_KEY = "selected_dataset_yaml"
+LOCAL_DATASET_INFO_KEY = "local_dataset_info"
 LAST_EXPORTED_DATASET_KEY = "latest_exported_dataset"
 LAST_TRAINING_RESULT_KEY = "latest_training_result"
 ACTIVE_TRAINING_JOB_KEY = "active_training_job"
@@ -241,6 +243,45 @@ def format_dataset_option(dataset: PreparedDataset) -> str:
         f"{dataset.dataset_dir.name} | {len(dataset.class_names)} kelas | "
         f"{split_summary} | labeled:{dataset.labeled_images}"
     )
+
+
+def serialize_dataset(dataset: PreparedDataset) -> dict[str, object]:
+    return {
+        "dataset_dir": str(dataset.dataset_dir.resolve()),
+        "data_yaml_path": str(dataset.data_yaml_path.resolve()),
+        "source_archive_path": str(dataset.source_archive_path.resolve()),
+        "source_project_id": dataset.source_project_id,
+        "class_names": list(dataset.class_names),
+        "split_counts": dict(dataset.split_counts),
+        "labeled_images": int(dataset.labeled_images),
+        "created_at": dataset.created_at,
+    }
+
+
+def deserialize_dataset(payload: object) -> PreparedDataset | None:
+    if not isinstance(payload, dict):
+        return None
+
+    try:
+        return PreparedDataset(
+            dataset_dir=Path(str(payload["dataset_dir"])),
+            data_yaml_path=Path(str(payload["data_yaml_path"])),
+            source_archive_path=Path(str(payload["source_archive_path"])),
+            source_project_id=(
+                int(payload["source_project_id"])
+                if payload.get("source_project_id") is not None
+                else None
+            ),
+            class_names=[str(item) for item in payload.get("class_names", [])],
+            split_counts={
+                str(split_name): int(count)
+                for split_name, count in payload.get("split_counts", {}).items()
+            },
+            labeled_images=int(payload.get("labeled_images", 0)),
+            created_at=str(payload.get("created_at", "")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def build_training_result_payload(job: TrainingJobState) -> dict[str, str]:
@@ -669,8 +710,8 @@ def render_training_tab(
 ) -> None:
     st.subheader("Export dan Training YOLO")
     st.write(
-        "Tab ini bisa memakai ZIP export YOLO yang di-upload manual atau export langsung via API Label Studio, "
-        "menyiapkan `data.yaml`, lalu menjalankan training Ultralytics langsung dari Streamlit."
+        "Tab ini bisa memakai ZIP export YOLO yang di-upload manual, export langsung via API Label Studio, "
+        "atau folder dataset lokal yang sudah valid, lalu menjalankan training Ultralytics langsung dari Streamlit."
     )
 
     st.caption(f"Folder dataset siap train: {config.dataset_dir}")
@@ -724,8 +765,10 @@ def render_training_tab(
     if training_running and active_training_job is not None:
         render_training_job_status(active_training_job)
 
-    st.markdown("#### Sumber Export Label Studio")
-    upload_tab, api_tab = st.tabs(["Upload ZIP", "Export via API"])
+    st.markdown("#### Sumber Dataset Training")
+    upload_tab, api_tab, folder_tab = st.tabs(
+        ["Upload ZIP", "Export via API", "Folder Dataset"]
+    )
 
     with upload_tab:
         st.write(
@@ -903,14 +946,50 @@ def render_training_tab(
                 except Exception as error:  # pragma: no cover - depends on local runtime env
                     st.error(f"Gagal export dataset Label Studio: {error}")
 
+    with folder_tab:
+        st.write(
+            "Pakai dataset YOLO lokal secara langsung jika folder dataset sudah ada dan valid."
+        )
+        local_dataset_input = st.text_input(
+            "Path folder dataset atau file data.yaml",
+            value=str(config.dataset_dir),
+            key="local_dataset_input",
+            disabled=training_running,
+            help="Contoh: data/datasets/my_dataset atau data/datasets/my_dataset/data.yaml",
+        )
+        if st.button(
+            "Gunakan folder dataset",
+            type="primary",
+            key="prepare_local_dataset",
+            disabled=training_running,
+        ):
+            try:
+                local_dataset = inspect_existing_yolo_dataset(Path(local_dataset_input))
+                st.session_state[LOCAL_DATASET_INFO_KEY] = serialize_dataset(local_dataset)
+                st.session_state[DATASET_KEY] = str(local_dataset.data_yaml_path.resolve())
+                st.success(
+                    f"Dataset lokal valid dan siap dipakai: {local_dataset.data_yaml_path}"
+                )
+            except Exception as error:  # pragma: no cover - depends on local runtime env
+                st.error(f"Folder dataset belum valid: {error}")
+
     datasets = list_prepared_datasets(config.dataset_dir)
+    local_dataset = deserialize_dataset(st.session_state.get(LOCAL_DATASET_INFO_KEY))
+    if local_dataset is not None and local_dataset.data_yaml_path.exists():
+        if not any(
+            dataset.data_yaml_path.resolve() == local_dataset.data_yaml_path.resolve()
+            for dataset in datasets
+        ):
+            datasets = [local_dataset, *datasets]
     dataset_lookup = {
         str(dataset.data_yaml_path.resolve()): dataset for dataset in datasets
     }
 
     st.markdown("#### Dataset Siap Train")
     if not dataset_lookup:
-        st.info("Belum ada dataset hasil export Label Studio yang siap digunakan.")
+        st.info(
+            "Belum ada dataset siap train. Siapkan dataset lewat upload ZIP, export API, atau folder dataset lokal."
+        )
         return
 
     if DATASET_KEY not in st.session_state or st.session_state[DATASET_KEY] not in dataset_lookup:

@@ -306,6 +306,55 @@ def read_training_progress(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def inspect_existing_yolo_dataset(dataset_path: Path) -> PreparedDataset:
+    data_yaml_path = _resolve_data_yaml_path(dataset_path)
+    payload = _read_yaml_file(data_yaml_path)
+    dataset_dir = _resolve_dataset_root(data_yaml_path=data_yaml_path, payload=payload)
+    class_names = _normalize_class_names(payload.get("names"))
+    if not class_names:
+        raise RuntimeError("Dataset valid harus punya `names` di data.yaml.")
+
+    split_entries_by_name: dict[str, list[Path]] = {}
+    split_counts: dict[str, int] = {}
+    for split_name in ("train", "val"):
+        if split_name not in payload:
+            raise RuntimeError(f"Dataset valid harus punya entry `{split_name}` di data.yaml.")
+
+        split_entries = _resolve_dataset_entries(
+            split_value=payload[split_name],
+            dataset_dir=dataset_dir,
+            yaml_dir=data_yaml_path.parent,
+        )
+        image_count = sum(_count_images_in_entry(path) for path in split_entries)
+        if image_count <= 0:
+            raise RuntimeError(
+                f"Path `{split_name}` pada dataset tidak berisi image yang bisa dipakai."
+            )
+        split_entries_by_name[split_name] = split_entries
+        split_counts[split_name] = image_count
+
+    labeled_images = _count_labeled_images(split_entries_by_name)
+    if labeled_images <= 0:
+        raise RuntimeError(
+            "Dataset ditemukan, tetapi file label YOLO tidak terdeteksi. "
+            "Pastikan struktur `images/...` dan `labels/...` tersedia."
+        )
+
+    return PreparedDataset(
+        dataset_dir=dataset_dir,
+        data_yaml_path=data_yaml_path,
+        source_archive_path=data_yaml_path,
+        source_project_id=None,
+        class_names=class_names,
+        split_counts=split_counts,
+        labeled_images=labeled_images,
+        created_at=datetime.fromtimestamp(
+            data_yaml_path.stat().st_mtime,
+            tz=timezone.utc,
+        ).isoformat(),
+    )
+
+
 def prepare_label_studio_yolo_dataset(
     archive_path: Path,
     dataset_root: Path,
@@ -549,6 +598,144 @@ def _find_label_studio_export_root(root: Path) -> Path:
         "Struktur export YOLO dari Label Studio tidak dikenali. "
         "Pastikan file ZIP berisi classes.txt dan folder images/."
     )
+
+
+def _resolve_data_yaml_path(dataset_path: Path) -> Path:
+    candidate_path = dataset_path.expanduser().resolve()
+    if candidate_path.is_file():
+        if candidate_path.suffix.lower() not in {".yaml", ".yml"}:
+            raise RuntimeError("File dataset harus berupa `data.yaml` atau `data.yml`.")
+        return candidate_path
+
+    if not candidate_path.exists():
+        raise RuntimeError(f"Path dataset tidak ditemukan: {candidate_path}")
+    if not candidate_path.is_dir():
+        raise RuntimeError(f"Path dataset tidak valid: {candidate_path}")
+
+    for file_name in ("data.yaml", "data.yml"):
+        yaml_path = candidate_path / file_name
+        if yaml_path.exists():
+            return yaml_path
+
+    raise RuntimeError(
+        "Folder dataset belum valid. File `data.yaml` atau `data.yml` tidak ditemukan."
+    )
+
+
+def _read_yaml_file(path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+    except ImportError as error:
+        raise RuntimeError(
+            "Dependency YAML tidak tersedia. Pastikan environment project ter-install lengkap."
+        ) from error
+
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Isi YAML dataset tidak valid: {path}")
+    return payload
+
+
+def _resolve_dataset_root(data_yaml_path: Path, payload: dict[str, Any]) -> Path:
+    root_entry = payload.get("path")
+    if root_entry:
+        root_path = Path(str(root_entry))
+        if not root_path.is_absolute():
+            root_path = (data_yaml_path.parent / root_path).resolve()
+        else:
+            root_path = root_path.resolve()
+        return root_path
+    return data_yaml_path.parent.resolve()
+
+
+def _normalize_class_names(raw_names: Any) -> list[str]:
+    if isinstance(raw_names, list):
+        return [str(item).strip() for item in raw_names if str(item).strip()]
+    if isinstance(raw_names, dict):
+        ordered_items = sorted(raw_names.items(), key=lambda item: int(item[0]))
+        return [str(value).strip() for _, value in ordered_items if str(value).strip()]
+    return []
+
+
+def _resolve_dataset_entries(
+    split_value: Any,
+    dataset_dir: Path,
+    yaml_dir: Path,
+) -> list[Path]:
+    if isinstance(split_value, list):
+        resolved_paths: list[Path] = []
+        for item in split_value:
+            resolved_paths.extend(
+                _resolve_dataset_entries(
+                    split_value=item,
+                    dataset_dir=dataset_dir,
+                    yaml_dir=yaml_dir,
+                )
+            )
+        return resolved_paths
+
+    if isinstance(split_value, str):
+        candidate_path = Path(split_value)
+    else:
+        candidate_path = Path(str(split_value))
+
+    if candidate_path.is_absolute():
+        resolved_path = candidate_path.resolve()
+    else:
+        dataset_candidate = (dataset_dir / candidate_path).resolve()
+        yaml_candidate = (yaml_dir / candidate_path).resolve()
+        resolved_path = dataset_candidate if dataset_candidate.exists() else yaml_candidate
+
+    if not resolved_path.exists():
+        raise RuntimeError(f"Path dataset tidak ditemukan: {resolved_path}")
+    return [resolved_path]
+
+
+def _count_images_in_entry(path: Path) -> int:
+    if path.is_file():
+        if path.suffix.lower() in IMAGE_SUFFIXES:
+            return 1
+        if path.suffix.lower() == ".txt":
+            lines = [
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            return len(lines)
+        return 0
+
+    return len(
+        [
+            item
+            for item in path.rglob("*")
+            if item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES
+        ]
+    )
+
+
+def _count_labeled_images(split_entries_by_name: dict[str, list[Path]]) -> int:
+    label_files: set[str] = set()
+    for split_entries in split_entries_by_name.values():
+        for entry in split_entries:
+            for label_dir in _candidate_label_dirs(entry):
+                if not label_dir.exists():
+                    continue
+                for label_path in label_dir.rglob("*.txt"):
+                    label_files.add(str(label_path.resolve()))
+    return len(label_files)
+
+
+def _candidate_label_dirs(entry: Path) -> list[Path]:
+    candidates: list[Path] = []
+    if entry.is_dir():
+        if "images" in entry.parts:
+            images_index = entry.parts.index("images")
+            label_parts = list(entry.parts)
+            label_parts[images_index] = "labels"
+            candidates.append(Path(*label_parts))
+        candidates.append(entry.parent / "labels" / entry.name)
+        candidates.append(entry.parent / "labels")
+    return list(dict.fromkeys(candidate.resolve() for candidate in candidates))
 
 
 def _read_class_names(classes_path: Path) -> list[str]:

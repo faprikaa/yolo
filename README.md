@@ -8,6 +8,7 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - menjalankan Label Studio dari instalasi `pip install label-studio`
 - upload ZIP hasil export YOLO dari Label Studio ke Streamlit
 - export anotasi Label Studio ke format YOLO langsung dari Streamlit
+- memakai folder dataset YOLO lokal yang sudah ada dan valid
 - menyiapkan `data.yaml` dan training ulang model Ultralytics langsung dari Streamlit
 
 ## Fitur utama
@@ -17,7 +18,7 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - Inference dari image upload
 - Integrasi Label Studio via SDK resmi, bukan REST manual
 - Workflow Label Studio berbasis `pip`, bukan bergantung Docker
-- Menu training untuk upload/export dataset YOLO, split train/val, dan start training
+- Menu training untuk upload/export dataset YOLO, pilih folder dataset lokal, dan start training
 - Selector model untuk base model YOLO11/YOLOv8 dan model hasil training sendiri
 - Tab training dengan parameter training, pilihan device `GPU 0` / `GPU 1` / `CPU`, progress epoch, dan resource usage
 
@@ -70,6 +71,50 @@ Panduan memilih model:
 - Pakai `Model hasil training` kalau Anda sudah punya `best.pt` dari dataset sendiri dan ingin inference yang lebih sesuai domain data Anda
 - Pakai `Path custom` kalau file model berada di luar folder hasil training aplikasi ini
 
+## Parameter Training
+
+Tab `Training` sekarang mendukung tiga sumber dataset:
+
+- `Upload ZIP` untuk file export YOLO dari Label Studio
+- `Export via API` untuk mengambil export langsung dari project Label Studio
+- `Folder Dataset` untuk dataset YOLO lokal yang sudah ada dan valid
+
+Dataset lokal dianggap valid jika:
+
+- path folder atau file `data.yaml` memang ada
+- `data.yaml` punya entry `train`, `val`, dan `names`
+- path train/val berisi image yang bisa dipakai
+- struktur label YOLO terdeteksi
+
+Parameter training yang bisa diatur dari UI:
+
+- `Nama run training`
+  Nama folder hasil training di `data/runs/`.
+- `Epochs`
+  Jumlah iterasi training penuh terhadap dataset.
+- `Batch size`
+  Jumlah image yang diproses per step training.
+- `Image size`
+  Ukuran image input saat training. Semakin besar biasanya detail lebih baik, tapi beban GPU/RAM naik.
+- `Patience`
+  Jumlah epoch tanpa peningkatan sebelum early stopping menghentikan training lebih cepat.
+- `Device training`
+  Pilihan device yang dipakai training seperti `Auto`, `CPU`, `GPU 0`, atau `GPU 1`.
+- `Workers`
+  Jumlah worker data loader. Biasanya makin tinggi bisa mempercepat loading data, tapi memakai resource CPU lebih banyak.
+- `Optimizer`
+  Optimizer yang dipakai Ultralytics, misalnya `auto`, `SGD`, `Adam`, atau `AdamW`.
+- `Learning rate`
+  Nilai awal learning rate (`lr0`) untuk training.
+
+Selama training berjalan, dashboard menampilkan:
+
+- progress epoch
+- metric terakhir dari `results.csv`
+- resource usage CPU
+- resource usage RAM
+- resource usage GPU
+
 ## Struktur project
 
 ```text
@@ -119,7 +164,7 @@ streamlit run app.py
 2. Buka tab `Live Camera` untuk capture data.
 3. Buka tab `Label Studio` untuk sync capture ke project labeling.
 4. Review dan simpan anotasi di Label Studio.
-5. Buka tab `Training` untuk upload ZIP export Label Studio atau export via API, siapkan dataset, lalu training model baru.
+5. Buka tab `Training` untuk upload ZIP export Label Studio, export via API, atau pilih folder dataset lokal, lalu training model baru.
 6. Setelah training selesai, pilih `best.pt` hasil training sebagai model aktif dari sidebar atau tombol cepat di tab `Training`.
 
 Tutorial lengkap ada di [TUTORIAL.md](TUTORIAL.md).

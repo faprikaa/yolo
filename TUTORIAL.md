@@ -8,6 +8,7 @@ Tutorial ini menjelaskan cara menjalankan dashboard yang sekarang bisa:
 4. export dataset YOLO langsung dari Streamlit
 5. training ulang model YOLO langsung dari Streamlit
 6. memilih model base YOLO atau model hasil training sendiri
+7. memakai folder dataset YOLO lokal yang sudah ada dan valid
 
 ## 1. Persiapan
 
@@ -159,6 +160,7 @@ Opsi sumber dataset:
 
 - `Upload ZIP` kalau kamu sudah export YOLO manual dari UI Label Studio
 - `Export via API` kalau ingin dashboard yang menarik export langsung dari project Label Studio
+- `Folder Dataset` kalau kamu sudah punya dataset YOLO lokal dengan `data.yaml` yang valid
 
 Contoh workflow `Export via API`:
 
@@ -175,6 +177,39 @@ Contoh workflow `Export via API`:
 6. pilih dataset yang ingin dipakai
 7. atur parameter training seperti `epochs`, `batch size`, `image size`, `patience`, `optimizer`, `learning rate`, `workers`, dan `device`
 8. klik `Mulai training YOLO`
+
+Kalau pakai `Folder Dataset`, masukkan salah satu dari:
+
+- path ke folder dataset yang berisi `data.yaml`
+- path langsung ke file `data.yaml`
+
+Dataset lokal dianggap valid jika:
+
+- `data.yaml` ada
+- entry `train`, `val`, dan `names` ada
+- path train/val berisi image
+- label YOLO ikut terdeteksi
+
+### Penjelasan parameter training
+
+- `Nama run training`
+  Nama folder hasil training di `data/runs`.
+- `Epochs`
+  Total epoch training.
+- `Batch size`
+  Jumlah image per batch.
+- `Image size`
+  Resolusi image input saat training.
+- `Patience`
+  Batas epoch tanpa improvement sebelum early stopping.
+- `Device training`
+  Device yang dipakai training seperti `Auto`, `CPU`, `GPU 0`, atau `GPU 1`.
+- `Workers`
+  Jumlah worker data loader.
+- `Optimizer`
+  Optimizer yang dipakai selama training.
+- `Learning rate`
+  Nilai awal learning rate.
 
 ## 11. Hasil training
 
