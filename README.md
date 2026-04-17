@@ -21,6 +21,55 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - Selector model untuk base model YOLO11/YOLOv8 dan model hasil training sendiri
 - Tab training dengan parameter training, pilihan device `GPU 0` / `GPU 1` / `CPU`, progress epoch, dan resource usage
 
+## Model yang tersedia
+
+Di sidebar, aplikasi bisa memakai tiga sumber model:
+
+- `Base YOLO` untuk model bawaan Ultralytics
+- `Model hasil training` untuk file `.pt` yang muncul dari hasil training project ini
+- `Path custom` untuk model `.pt` lain yang ingin dipakai manual
+
+Model yang tersedia di opsi `Base YOLO` saat ini:
+
+- `yolo11n.pt`
+- `yolo11s.pt`
+- `yolo11m.pt`
+- `yolo11l.pt`
+- `yolo11x.pt`
+- `yolov8n.pt`
+- `yolov8s.pt`
+- `yolov8m.pt`
+- `yolov8l.pt`
+- `yolov8x.pt`
+
+Arti suffix model:
+
+- `n` = nano
+  Model paling ringan dan paling cepat. Cocok untuk live cam inference di laptop biasa, eksperimen cepat, atau perangkat dengan resource terbatas.
+- `s` = small
+  Sedikit lebih berat dari `n`, tapi biasanya akurasi lebih stabil. Cocok untuk penggunaan harian kalau tetap butuh inference cepat.
+- `m` = medium
+  Titik tengah antara kecepatan dan akurasi. Cocok untuk training dan inference saat resource GPU sudah lebih memadai.
+- `l` = large
+  Lebih berat, biasanya dipakai saat fokus ke akurasi dibanding latency. Cocok untuk training di GPU yang lebih kuat.
+- `x` = extra large
+  Model paling besar di daftar ini. Cocok untuk eksperimen akurasi maksimum, bukan untuk device yang terbatas.
+
+Fungsi model di dalam aplikasi ini:
+
+- Model aktif dipakai untuk `Live Cam Inference`
+- Model aktif dipakai untuk `Image Inference`
+- Model aktif dipakai untuk pre-label saat sync ke Label Studio
+- Model aktif juga dipakai sebagai starting weights saat training dari tab `Training`
+
+Panduan memilih model:
+
+- Pakai `yolo11n.pt` atau `yolov8n.pt` kalau targetnya webcam real-time dan hardware terbatas
+- Pakai `yolo11s.pt` atau `yolov8s.pt` kalau ingin sedikit naik akurasi tanpa terlalu berat
+- Pakai `m`, `l`, atau `x` kalau fokus utama ada di kualitas deteksi dan training dilakukan di GPU
+- Pakai `Model hasil training` kalau Anda sudah punya `best.pt` dari dataset sendiri dan ingin inference yang lebih sesuai domain data Anda
+- Pakai `Path custom` kalau file model berada di luar folder hasil training aplikasi ini
+
 ## Struktur project
 
 ```text
