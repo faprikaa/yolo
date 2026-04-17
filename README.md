@@ -174,15 +174,33 @@ pip install -r requirements-dev.txt
 
 3. Salin environment file:
 
+Windows PowerShell:
+
 ```powershell
 Copy-Item .env.example .env
 ```
 
+Linux/macOS:
+
+```bash
+cp .env.example .env
+```
+
 4. Jalankan Label Studio dari package `pip`:
+
+Windows PowerShell:
 
 ```powershell
 $env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED="true"
 $env:LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="$PWD\data"
+label-studio start
+```
+
+Linux/macOS:
+
+```bash
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="$(pwd)/data"
 label-studio start
 ```
 

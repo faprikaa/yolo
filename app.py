@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -122,12 +123,47 @@ def decode_uploaded_image(uploaded_file) -> np.ndarray | None:
     return image
 
 
-def build_label_studio_start_command(config: AppConfig) -> str:
-    return (
-        '$env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED="true"\n'
-        f'$env:LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="{config.label_studio_local_root}"\n'
-        "label-studio start"
+def _build_shell_path(root_path: Path, shell_name: str) -> str:
+    try:
+        relative_path = root_path.resolve().relative_to(ROOT_DIR.resolve())
+    except ValueError:
+        relative_path = None
+
+    if shell_name == "powershell":
+        if relative_path is None:
+            return str(root_path)
+        if not relative_path.parts:
+            return "$PWD"
+        return "$PWD\\" + "\\".join(relative_path.parts)
+
+    if relative_path is None:
+        return shlex.quote(root_path.resolve().as_posix())
+    if not relative_path.parts:
+        return "$(pwd)"
+    return "$(pwd)/" + "/".join(relative_path.parts)
+
+
+def build_label_studio_start_commands(config: AppConfig) -> dict[str, str]:
+    powershell_root = _build_shell_path(
+        root_path=config.label_studio_local_root,
+        shell_name="powershell",
     )
+    bash_root = _build_shell_path(
+        root_path=config.label_studio_local_root,
+        shell_name="bash",
+    )
+    return {
+        "powershell": (
+            '$env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED="true"\n'
+            f'$env:LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="{powershell_root}"\n'
+            "label-studio start"
+        ),
+        "bash": (
+            "export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true\n"
+            f"export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT={bash_root}\n"
+            "label-studio start"
+        ),
+    }
 
 
 def initialize_model_selection_state(
@@ -557,8 +593,14 @@ def render_label_studio_tab(
         "bukan workflow Docker wajib. Jalankan server Label Studio di environment Python yang sama "
         "atau environment lain yang punya akses ke folder data ini."
     )
-    st.code("pip install label-studio label-studio-sdk", language="powershell")
-    st.code(build_label_studio_start_command(config), language="powershell")
+    start_commands = build_label_studio_start_commands(config)
+    windows_tab, linux_tab = st.tabs(["Windows", "Linux/macOS"])
+    with windows_tab:
+        st.code("pip install label-studio label-studio-sdk", language="powershell")
+        st.code(start_commands["powershell"], language="powershell")
+    with linux_tab:
+        st.code("pip install label-studio label-studio-sdk", language="bash")
+        st.code(start_commands["bash"], language="bash")
 
     captures = list_capture_artifacts(config.capture_dir, limit=500)
     if not captures:

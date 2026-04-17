@@ -30,8 +30,16 @@ Dependency penting untuk workflow baru:
 
 Salin `.env.example` menjadi `.env`.
 
+Windows PowerShell:
+
 ```powershell
 Copy-Item .env.example .env
+```
+
+Linux/macOS:
+
+```bash
+cp .env.example .env
 ```
 
 Contoh isi `.env`:
@@ -61,9 +69,19 @@ Project ini tidak lagi mengandalkan Docker sebagai workflow utama.
 
 Jalankan Label Studio seperti ini:
 
+Windows PowerShell:
+
 ```powershell
 $env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED="true"
 $env:LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="$PWD\data"
+label-studio start
+```
+
+Linux/macOS:
+
+```bash
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT="$(pwd)/data"
 label-studio start
 ```
 
