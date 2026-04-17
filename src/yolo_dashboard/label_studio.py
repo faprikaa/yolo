@@ -229,11 +229,14 @@ class LabelStudioClient:
         poll_interval_seconds: float = 1.0,
     ) -> LabelStudioExportArtifact:
         export_dir.mkdir(parents=True, exist_ok=True)
-        export_type_name = export_type.upper()
+        export_type_candidates = self._resolve_export_type_candidates(
+            export_type=export_type,
+            download_resources=download_resources,
+        )
 
         project = self._get_project(project_id)
         snapshot_title = (
-            f"Streamlit {export_type_name} export "
+            f"Streamlit {export_type_candidates[0]} export "
             f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
         )
         try:
@@ -252,60 +255,80 @@ class LabelStudioClient:
             poll_interval_seconds=poll_interval_seconds,
         )
 
-        try:
-            conversion = self.client.projects.exports.convert(
-                id=project_id,
-                export_pk=export_id,
-                export_type=export_type_name,
-                download_resources=download_resources,
-            )
-        except TypeError:
+        last_error: Exception | None = None
+        for export_type_name in export_type_candidates:
             try:
                 conversion = self.client.projects.exports.convert(
                     id=project_id,
                     export_pk=export_id,
                     export_type=export_type_name,
+                    download_resources=download_resources,
                 )
+            except TypeError:
+                try:
+                    conversion = self.client.projects.exports.convert(
+                        id=project_id,
+                        export_pk=export_id,
+                        export_type=export_type_name,
+                    )
+                except Exception as error:
+                    last_error = error
+                    continue
             except Exception as error:
-                raise LabelStudioError(
-                    f"Gagal memulai konversi export {export_type_name}: {error}"
-                ) from error
-        except Exception as error:
-            raise LabelStudioError(f"Gagal memulai konversi export {export_type_name}: {error}") from error
+                last_error = error
+                continue
 
-        converted_format_id = self._read_attr(conversion, "converted_format")
-        self._wait_for_conversion_completion(
-            project_id=project_id,
-            export_id=export_id,
-            export_type=export_type_name,
-            converted_format_id=converted_format_id,
-            timeout_seconds=timeout_seconds,
-            poll_interval_seconds=poll_interval_seconds,
+            converted_format_id = self._read_attr(conversion, "converted_format")
+            self._wait_for_conversion_completion(
+                project_id=project_id,
+                export_id=export_id,
+                export_type=export_type_name,
+                converted_format_id=converted_format_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            )
+
+            archive_path = export_dir / (
+                f"label_studio_project_{project_id}_{export_type_name.lower()}_{_timestamp_slug()}.zip"
+            )
+            try:
+                with archive_path.open("wb") as output_file:
+                    for chunk in self.client.projects.exports.download(
+                        id=project_id,
+                        export_pk=export_id,
+                        export_type=export_type_name,
+                        request_options={"chunk_size": 1024 * 1024},
+                    ):
+                        output_file.write(chunk)
+            except Exception as error:
+                last_error = error
+                if archive_path.exists():
+                    archive_path.unlink(missing_ok=True)
+                continue
+
+            return LabelStudioExportArtifact(
+                project_id=project_id,
+                project_title=project.title,
+                export_id=export_id,
+                archive_path=archive_path,
+                export_type=export_type_name,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+        raise LabelStudioError(
+            "Gagal membuat archive export Label Studio untuk format "
+            f"{', '.join(export_type_candidates)}: {last_error}"
         )
 
-        archive_path = export_dir / (
-            f"label_studio_project_{project_id}_{export_type_name.lower()}_{_timestamp_slug()}.zip"
-        )
-        try:
-            with archive_path.open("wb") as output_file:
-                for chunk in self.client.projects.exports.download(
-                    id=project_id,
-                    export_pk=export_id,
-                    export_type=export_type_name,
-                    request_options={"chunk_size": 1024 * 1024},
-                ):
-                    output_file.write(chunk)
-        except Exception as error:
-            raise LabelStudioError(f"Gagal mengunduh archive export {export_type_name}: {error}") from error
-
-        return LabelStudioExportArtifact(
-            project_id=project_id,
-            project_title=project.title,
-            export_id=export_id,
-            archive_path=archive_path,
-            export_type=export_type_name,
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
+    def _resolve_export_type_candidates(
+        self,
+        export_type: str,
+        download_resources: bool,
+    ) -> list[str]:
+        normalized_export_type = export_type.strip().upper() or "YOLO"
+        if normalized_export_type == "YOLO" and download_resources:
+            return ["YOLO_WITH_IMAGES", "YOLO"]
+        return [normalized_export_type]
 
     def _create_sdk_client(self) -> Any:
         try:

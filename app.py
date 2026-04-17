@@ -774,6 +774,10 @@ def render_training_tab(
         st.write(
             "Upload file ZIP hasil export YOLO dari Label Studio kalau kamu sudah export manual dari UI Label Studio."
         )
+        st.caption(
+            "Jika ZIP tidak membawa folder `images/`, dashboard akan mencoba memakai "
+            f"source image dari `{config.label_studio_local_root}`."
+        )
         uploaded_export = st.file_uploader(
             "Upload ZIP export YOLO Label Studio",
             type=["zip"],
@@ -808,6 +812,10 @@ def render_training_tab(
                             archive_path=archive_path,
                             dataset_root=config.dataset_dir,
                             train_split=float(upload_train_split),
+                            fallback_image_roots=[
+                                config.capture_dir,
+                                config.label_studio_local_root,
+                            ],
                         )
                     st.session_state[DATASET_KEY] = str(prepared_dataset.data_yaml_path.resolve())
                     st.session_state[LAST_EXPORTED_DATASET_KEY] = {
@@ -822,6 +830,11 @@ def render_training_tab(
                     st.error(f"Gagal memproses ZIP upload: {error}")
 
     with api_tab:
+        st.caption(
+            "Export via API akan mengutamakan format YOLO yang menyertakan image. "
+            "Kalau server hanya mengembalikan label, dashboard tetap mencoba mencari "
+            f"source image dari `{config.label_studio_local_root}`."
+        )
         label_studio_url = st.text_input(
             "Label Studio URL",
             key=TRAINING_URL_KEY,
@@ -931,6 +944,10 @@ def render_training_tab(
                             dataset_root=config.dataset_dir,
                             train_split=float(train_split),
                             project_id=selected_project_id,
+                            fallback_image_roots=[
+                                config.capture_dir,
+                                config.label_studio_local_root,
+                            ],
                         )
                     st.session_state[DATASET_KEY] = str(prepared_dataset.data_yaml_path.resolve())
                     st.session_state[LAST_EXPORTED_DATASET_KEY] = {

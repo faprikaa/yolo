@@ -94,6 +94,21 @@ Model aktif ini dipakai untuk:
 - pre-label ke Label Studio
 - starting weights saat training dari tab `Training`
 
+### Penjelasan slider di sidebar
+
+- `Confidence threshold`
+  Menentukan skor minimum supaya sebuah deteksi tetap ditampilkan.
+  Kalau nilainya dinaikkan, deteksi akan lebih ketat.
+  Kalau nilainya diturunkan, model akan lebih mudah menampilkan box, termasuk yang confidence-nya rendah.
+- `IoU threshold`
+  Dipakai saat penyaringan box yang saling overlap.
+  Nilai lebih kecil biasanya membuang box duplikat lebih agresif.
+  Nilai lebih besar membuat overlap lebih ditoleransi.
+- `Inference image size`
+  Ukuran image untuk proses inference.
+  Nilai besar bisa membantu objek kecil lebih terbaca, tapi beban komputasi naik.
+  Nilai kecil lebih cepat untuk live cam.
+
 ## 6. Live Camera
 
 Masuk ke tab `Live Camera`.
@@ -162,6 +177,12 @@ Opsi sumber dataset:
 - `Export via API` kalau ingin dashboard yang menarik export langsung dari project Label Studio
 - `Folder Dataset` kalau kamu sudah punya dataset YOLO lokal dengan `data.yaml` yang valid
 
+Slider di tab ini:
+
+- `Proporsi train split`
+  Menentukan pembagian data train dan validation saat dataset disiapkan dari export Label Studio.
+  Contoh `0.80` berarti sekitar 80% data untuk training dan 20% untuk validation.
+
 Contoh workflow `Export via API`:
 
 1. isi `Label Studio URL` dan `API Key`
@@ -210,6 +231,14 @@ Dataset lokal dianggap valid jika:
   Optimizer yang dipakai selama training.
 - `Learning rate`
   Nilai awal learning rate.
+
+### Panduan singkat mengatur slider
+
+- Naikkan `Confidence threshold` kalau terlalu banyak false positive
+- Turunkan `Confidence threshold` kalau objek sering lolos tidak terdeteksi
+- Turunkan `IoU threshold` kalau box ganda terlalu sering muncul
+- Naikkan `Inference image size` kalau objek kecil sulit terbaca dan hardware masih sanggup
+- Pakai `Proporsi train split` sekitar `0.80` sampai `0.90` untuk percobaan awal
 
 ## 11. Hasil training
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 from zipfile import ZipFile
 
 
@@ -99,6 +100,13 @@ class PreparedDataset:
     split_counts: dict[str, int]
     labeled_images: int
     created_at: str
+
+
+@dataclass(frozen=True)
+class DatasetSourceAsset:
+    image_path: Path
+    relative_path: Path
+    label_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -361,6 +369,7 @@ def prepare_label_studio_yolo_dataset(
     train_split: float = 0.8,
     seed: int = 42,
     project_id: int | None = None,
+    fallback_image_roots: list[Path] | None = None,
 ) -> PreparedDataset:
     if not archive_path.exists():
         raise RuntimeError(f"File export Label Studio tidak ditemukan: {archive_path}")
@@ -378,9 +387,18 @@ def prepare_label_studio_yolo_dataset(
 
         export_root = _find_label_studio_export_root(extract_dir)
         class_names = _read_class_names(export_root / "classes.txt")
-        source_images = _list_source_images(export_root / "images")
-        if not source_images:
-            raise RuntimeError("Export YOLO tidak berisi image yang bisa dipakai untuk training.")
+        source_assets = _collect_label_studio_source_assets(
+            export_root=export_root,
+            fallback_image_roots=fallback_image_roots,
+        )
+        if not source_assets:
+            normalized_roots = _normalize_search_roots(fallback_image_roots or [])
+            fallback_summary = ", ".join(str(path) for path in normalized_roots) or "-"
+            raise RuntimeError(
+                "Export YOLO tidak berisi image di dalam ZIP dan image sumber juga tidak "
+                "ditemukan dari fallback path. "
+                f"Fallback yang dicek: {fallback_summary}"
+            )
 
         dataset_dir = dataset_root / f"prepared_yolo_{slug}"
         images_dir = dataset_dir / "images"
@@ -388,26 +406,24 @@ def prepare_label_studio_yolo_dataset(
         images_dir.mkdir(parents=True, exist_ok=True)
         labels_dir.mkdir(parents=True, exist_ok=True)
 
-        splits = _split_images(source_images, train_split=train_split, seed=seed)
+        splits = _split_images(source_assets, train_split=train_split, seed=seed)
         labeled_relative_paths: set[str] = set()
         split_counts: dict[str, int] = {}
 
-        raw_images_dir = export_root / "images"
-        raw_labels_dir = export_root / "labels"
-        for split_name, image_paths in splits.items():
-            split_counts[split_name] = len(image_paths)
-            for image_path in image_paths:
-                relative_path = image_path.relative_to(raw_images_dir)
-                destination_image = images_dir / split_name / relative_path
+        for split_name, assets in splits.items():
+            split_counts[split_name] = len(assets)
+            for asset in assets:
+                destination_image = images_dir / split_name / asset.relative_path
                 destination_image.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(image_path, destination_image)
+                shutil.copy2(asset.image_path, destination_image)
 
-                source_label = raw_labels_dir / relative_path.with_suffix(".txt")
-                if source_label.exists():
-                    destination_label = labels_dir / split_name / relative_path.with_suffix(".txt")
+                if asset.label_path is not None and asset.label_path.exists():
+                    destination_label = (
+                        labels_dir / split_name / asset.relative_path.with_suffix(".txt")
+                    )
                     destination_label.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_label, destination_label)
-                    labeled_relative_paths.add(relative_path.as_posix())
+                    shutil.copy2(asset.label_path, destination_label)
+                    labeled_relative_paths.add(asset.relative_path.with_suffix("").as_posix())
 
         data_yaml_path = dataset_dir / "data.yaml"
         data_yaml_path.write_text(
@@ -586,18 +602,308 @@ def _read_completed_epochs(run_dir: Path) -> int:
 
 
 def _find_label_studio_export_root(root: Path) -> Path:
-    if (root / "classes.txt").exists() and (root / "images").exists():
+    if (root / "classes.txt").exists() and (
+        (root / "images").exists() or (root / "labels").exists()
+    ):
         return root
 
     for candidate in root.rglob("classes.txt"):
         candidate_root = candidate.parent
-        if (candidate_root / "images").exists():
+        if (candidate_root / "images").exists() or (candidate_root / "labels").exists():
             return candidate_root
 
     raise RuntimeError(
         "Struktur export YOLO dari Label Studio tidak dikenali. "
-        "Pastikan file ZIP berisi classes.txt dan folder images/."
+        "Pastikan file ZIP berisi classes.txt dan folder labels/."
     )
+
+
+def _collect_label_studio_source_assets(
+    export_root: Path,
+    fallback_image_roots: list[Path] | None,
+) -> list[DatasetSourceAsset]:
+    labels_dir = _find_export_child_dir(export_root, "labels")
+    images_dir = _find_export_child_dir(export_root, "images")
+    source_assets: list[DatasetSourceAsset] = []
+    covered_label_keys: set[str] = set()
+
+    if images_dir is not None:
+        for image_path in _list_source_images(images_dir):
+            relative_path = image_path.relative_to(images_dir)
+            label_path = None
+            if labels_dir is not None:
+                candidate_label = labels_dir / relative_path.with_suffix(".txt")
+                if candidate_label.exists():
+                    label_path = candidate_label
+                    covered_label_keys.add(_normalized_relative_key(relative_path))
+            source_assets.append(
+                DatasetSourceAsset(
+                    image_path=image_path,
+                    relative_path=relative_path,
+                    label_path=label_path,
+                )
+            )
+
+    if labels_dir is None:
+        return source_assets
+
+    candidate_index = _build_candidate_image_index(
+        search_roots=_normalize_search_roots(fallback_image_roots or []),
+        extra_image_paths=_extract_absolute_image_paths_from_export_metadata(export_root),
+    )
+
+    for label_path in _list_label_files(labels_dir):
+        relative_label_path = label_path.relative_to(labels_dir)
+        relative_key = _normalized_relative_key(relative_label_path)
+        if relative_key in covered_label_keys:
+            continue
+
+        matched_image_path = _resolve_image_for_label(
+            relative_label_path=relative_label_path,
+            candidate_index=candidate_index,
+        )
+        if matched_image_path is None:
+            continue
+
+        source_assets.append(
+            DatasetSourceAsset(
+                image_path=matched_image_path,
+                relative_path=relative_label_path.with_suffix(matched_image_path.suffix),
+                label_path=label_path,
+            )
+        )
+        covered_label_keys.add(relative_key)
+
+    return _deduplicate_source_assets(source_assets)
+
+
+def _find_export_child_dir(root: Path, folder_name: str) -> Path | None:
+    direct_candidate = root / folder_name
+    if direct_candidate.is_dir():
+        return direct_candidate
+
+    candidates = sorted(
+        [
+            candidate
+            for candidate in root.rglob(folder_name)
+            if candidate.is_dir()
+        ],
+        key=lambda path: path.as_posix().casefold(),
+    )
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def _list_label_files(labels_dir: Path) -> list[Path]:
+    if not labels_dir.exists():
+        return []
+    return sorted(
+        [
+            path
+            for path in labels_dir.rglob("*.txt")
+            if path.is_file()
+        ]
+    )
+
+
+def _normalize_search_roots(search_roots: list[Path]) -> list[Path]:
+    normalized_roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for root in search_roots:
+        try:
+            resolved_root = root.expanduser().resolve()
+        except Exception:
+            continue
+        if not resolved_root.exists() or not resolved_root.is_dir():
+            continue
+        root_key = str(resolved_root).casefold()
+        if root_key in seen_roots:
+            continue
+        seen_roots.add(root_key)
+        normalized_roots.append(resolved_root)
+    return normalized_roots
+
+
+def _build_candidate_image_index(
+    search_roots: list[Path],
+    extra_image_paths: list[Path],
+) -> dict[str, dict[str, list[Path]]]:
+    by_relative: dict[str, list[Path]] = {}
+    by_stem: dict[str, list[Path]] = {}
+    seen_paths: set[str] = set()
+
+    for image_path in extra_image_paths:
+        _register_candidate_image(
+            image_path=image_path,
+            search_roots=search_roots,
+            by_relative=by_relative,
+            by_stem=by_stem,
+            seen_paths=seen_paths,
+        )
+
+    for root in search_roots:
+        for image_path in root.rglob("*"):
+            if not image_path.is_file() or image_path.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+            _register_candidate_image(
+                image_path=image_path,
+                search_roots=search_roots,
+                by_relative=by_relative,
+                by_stem=by_stem,
+                seen_paths=seen_paths,
+            )
+
+    return {
+        "by_relative": by_relative,
+        "by_stem": by_stem,
+    }
+
+
+def _register_candidate_image(
+    image_path: Path,
+    search_roots: list[Path],
+    by_relative: dict[str, list[Path]],
+    by_stem: dict[str, list[Path]],
+    seen_paths: set[str],
+) -> None:
+    try:
+        resolved_image_path = image_path.expanduser().resolve()
+    except Exception:
+        return
+    if not resolved_image_path.exists() or not resolved_image_path.is_file():
+        return
+    if resolved_image_path.suffix.lower() not in IMAGE_SUFFIXES:
+        return
+
+    image_key = str(resolved_image_path).casefold()
+    if image_key in seen_paths:
+        return
+    seen_paths.add(image_key)
+
+    by_stem.setdefault(resolved_image_path.stem.casefold(), []).append(resolved_image_path)
+
+    for root in search_roots:
+        try:
+            relative_path = resolved_image_path.relative_to(root)
+        except ValueError:
+            continue
+
+        relative_key = _normalized_relative_key(relative_path)
+        by_relative.setdefault(relative_key, []).append(resolved_image_path)
+
+        if relative_path.parts and relative_path.parts[0].casefold() == "images":
+            trimmed_relative = Path(*relative_path.parts[1:]) if len(relative_path.parts) > 1 else Path(relative_path.name)
+            trimmed_key = _normalized_relative_key(trimmed_relative)
+            by_relative.setdefault(trimmed_key, []).append(resolved_image_path)
+
+
+def _resolve_image_for_label(
+    relative_label_path: Path,
+    candidate_index: dict[str, dict[str, list[Path]]],
+) -> Path | None:
+    relative_key = _normalized_relative_key(relative_label_path)
+    by_relative = candidate_index.get("by_relative", {})
+    by_stem = candidate_index.get("by_stem", {})
+
+    direct_candidates = by_relative.get(relative_key, [])
+    if direct_candidates:
+        return sorted(
+            direct_candidates,
+            key=lambda path: path.as_posix().casefold(),
+        )[0]
+
+    stem_candidates = by_stem.get(relative_label_path.stem.casefold(), [])
+    if stem_candidates:
+        return sorted(stem_candidates, key=lambda path: path.as_posix().casefold())[0]
+
+    return None
+
+
+def _extract_absolute_image_paths_from_export_metadata(root: Path) -> list[Path]:
+    discovered_paths: list[Path] = []
+    seen_paths: set[str] = set()
+    for json_path in root.rglob("*.json"):
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        for value in _iter_string_values(payload):
+            absolute_image_path = _extract_absolute_image_path(value)
+            if absolute_image_path is None:
+                continue
+            image_key = str(absolute_image_path).casefold()
+            if image_key in seen_paths:
+                continue
+            seen_paths.add(image_key)
+            discovered_paths.append(absolute_image_path)
+    return discovered_paths
+
+
+def _iter_string_values(payload: Any) -> list[str]:
+    if isinstance(payload, str):
+        return [payload]
+    if isinstance(payload, dict):
+        values: list[str] = []
+        for value in payload.values():
+            values.extend(_iter_string_values(value))
+        return values
+    if isinstance(payload, list):
+        values: list[str] = []
+        for item in payload:
+            values.extend(_iter_string_values(item))
+        return values
+    return []
+
+
+def _extract_absolute_image_path(value: str) -> Path | None:
+    raw_value = value.strip()
+    if not raw_value:
+        return None
+
+    candidate_values = [raw_value]
+    if raw_value.startswith("file://"):
+        candidate_values.append(unquote(urlparse(raw_value).path))
+
+    query_payload = parse_qs(urlparse(raw_value).query)
+    for item in query_payload.get("d", []):
+        candidate_values.append(unquote(item))
+
+    for candidate in candidate_values:
+        normalized_candidate = candidate.strip()
+        if not normalized_candidate:
+            continue
+        candidate_path = Path(normalized_candidate)
+        if (
+            candidate_path.is_absolute()
+            and candidate_path.exists()
+            and candidate_path.is_file()
+            and candidate_path.suffix.lower() in IMAGE_SUFFIXES
+        ):
+            return candidate_path.resolve()
+    return None
+
+
+def _normalized_relative_key(path: Path) -> str:
+    return path.with_suffix("").as_posix().casefold()
+
+
+def _deduplicate_source_assets(source_assets: list[DatasetSourceAsset]) -> list[DatasetSourceAsset]:
+    deduplicated_assets: list[DatasetSourceAsset] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for asset in source_assets:
+        asset_key = (
+            asset.relative_path.as_posix().casefold(),
+            str(asset.image_path.resolve()).casefold(),
+        )
+        if asset_key in seen_keys:
+            continue
+        seen_keys.add(asset_key)
+        deduplicated_assets.append(asset)
+
+    return deduplicated_assets
 
 
 def _resolve_data_yaml_path(dataset_path: Path) -> Path:

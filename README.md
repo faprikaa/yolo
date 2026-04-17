@@ -115,6 +115,40 @@ Selama training berjalan, dashboard menampilkan:
 - resource usage RAM
 - resource usage GPU
 
+## Penjelasan Slider UI
+
+Beberapa pengaturan di dashboard memakai slider karena nilainya biasanya perlu dicari titik yang pas sesuai data dan hardware.
+
+Slider di sidebar inference:
+
+- `Confidence threshold`
+  Menentukan skor minimum agar deteksi dianggap valid.
+  Nilai lebih tinggi berarti model lebih ketat dan jumlah box biasanya berkurang.
+  Nilai lebih rendah berarti model lebih permisif dan lebih banyak box bisa muncul, termasuk false positive.
+- `IoU threshold`
+  Dipakai saat proses Non-Max Suppression untuk menentukan kapan dua box dianggap saling overlap terlalu besar.
+  Nilai lebih rendah membuat box duplikat lebih cepat dibuang.
+  Nilai lebih tinggi membuat model lebih toleran terhadap box yang saling tumpang tindih.
+- `Inference image size`
+  Ukuran image yang dipakai saat inference.
+  Nilai lebih besar bisa membantu objek kecil lebih terlihat, tetapi inference jadi lebih berat dan lebih lambat.
+  Nilai lebih kecil membuat inference lebih ringan dan lebih cepat.
+
+Slider di tab training:
+
+- `Proporsi train split`
+  Menentukan berapa persen data masuk ke train set saat dataset disiapkan dari ZIP export Label Studio.
+  Contoh `0.80` berarti sekitar 80% data dipakai untuk training dan 20% sisanya untuk validation.
+  Nilai ini dipakai saat sumber dataset berasal dari `Upload ZIP` atau `Export via API`.
+
+Panduan cepat:
+
+- Naikkan `Confidence threshold` kalau terlalu banyak deteksi salah
+- Turunkan `Confidence threshold` kalau objek benar sering tidak tertangkap
+- Turunkan `IoU threshold` kalau box ganda terlalu sering muncul
+- Naikkan `Inference image size` kalau objek kecil sulit terbaca dan hardware masih kuat
+- Pakai `train split` sekitar `0.80` sampai `0.90` untuk kebanyakan eksperimen awal
+
 ## Struktur project
 
 ```text
