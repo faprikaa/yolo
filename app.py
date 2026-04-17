@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -31,12 +32,16 @@ from yolo_dashboard.storage import (
 )
 from yolo_dashboard.training import (
     PreparedDataset,
+    TrainingJobState,
     TrainedModelArtifact,
     discover_trained_models,
+    get_resource_usage,
+    get_training_job,
     list_base_model_names,
+    list_training_device_options,
     list_prepared_datasets,
     prepare_label_studio_yolo_dataset,
-    train_yolo_model,
+    start_training_job,
 )
 from yolo_dashboard.webrtc_processor import LiveYOLOProcessor
 from yolo_dashboard.yolo_inference import Detection, YOLOService, parse_selected_labels
@@ -49,6 +54,7 @@ CUSTOM_MODEL_KEY = "custom_model_path"
 DATASET_KEY = "selected_dataset_yaml"
 LAST_EXPORTED_DATASET_KEY = "latest_exported_dataset"
 LAST_TRAINING_RESULT_KEY = "latest_training_result"
+ACTIVE_TRAINING_JOB_KEY = "active_training_job"
 TRAINING_URL_KEY = "training_label_studio_url"
 TRAINING_API_KEY_KEY = "training_label_studio_api_key"
 TRAINING_PROJECT_KEY = "training_label_studio_project"
@@ -234,6 +240,90 @@ def format_dataset_option(dataset: PreparedDataset) -> str:
         f"{dataset.dataset_dir.name} | {len(dataset.class_names)} kelas | "
         f"{split_summary} | labeled:{dataset.labeled_images}"
     )
+
+
+def build_training_result_payload(job: TrainingJobState) -> dict[str, str]:
+    return {
+        "run_dir": str(job.run_dir.resolve()),
+        "best_model_path": (
+            str(job.best_model_path.resolve()) if job.best_model_path else ""
+        ),
+        "last_model_path": (
+            str(job.last_model_path.resolve()) if job.last_model_path else ""
+        ),
+        "results_path": (
+            str(job.results_path.resolve()) if job.results_path else ""
+        ),
+        "dataset_yaml_path": str(job.dataset_yaml_path.resolve()),
+        "source_model_path": job.source_model_path,
+    }
+
+
+def render_resource_usage() -> None:
+    resources = get_resource_usage()
+
+    resource_cols = st.columns(3)
+    with resource_cols[0]:
+        cpu_percent = resources.get("cpu_percent")
+        st.metric(
+            "CPU",
+            f"{cpu_percent:.1f}%" if cpu_percent is not None else "N/A",
+        )
+    with resource_cols[1]:
+        memory_percent = resources.get("memory_percent")
+        st.metric(
+            "RAM",
+            f"{memory_percent:.1f}%" if memory_percent is not None else "N/A",
+        )
+    with resource_cols[2]:
+        process_memory_gb = resources.get("process_memory_gb")
+        st.metric(
+            "Proses Streamlit",
+            f"{process_memory_gb:.2f} GB" if process_memory_gb is not None else "N/A",
+        )
+
+    gpu_resources = resources.get("gpus", [])
+    if gpu_resources:
+        gpu_cols = st.columns(len(gpu_resources))
+        for column, gpu in zip(gpu_cols, gpu_resources):
+            with column:
+                st.metric(
+                    f"GPU {gpu['index']}",
+                    f"{gpu['used_gb']:.2f}/{gpu['total_gb']:.2f} GB",
+                )
+                st.caption(f"{gpu['name']} | mem {gpu['memory_percent']:.1f}%")
+
+
+def render_training_job_status(job: TrainingJobState) -> None:
+    st.markdown("#### Progress Training")
+    progress_value = 0.0
+    if job.total_epochs > 0:
+        progress_value = min(job.current_epoch / job.total_epochs, 1.0)
+    st.progress(
+        progress_value,
+        text=(
+            f"Status: {job.status} | Epoch {job.current_epoch}/{job.total_epochs} | "
+            f"Device: {job.device_label}"
+        ),
+    )
+    st.caption(f"Run dir: {job.run_dir}")
+    st.caption(f"Status detail: {job.message}")
+
+    render_resource_usage()
+
+    if job.results_path and job.results_path.exists():
+        try:
+            results_dataframe = pd.read_csv(job.results_path)
+        except Exception:
+            results_dataframe = pd.DataFrame()
+
+        if not results_dataframe.empty:
+            st.caption("Metric terakhir")
+            st.dataframe(
+                results_dataframe.tail(1),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def try_list_label_studio_projects(
@@ -564,6 +654,23 @@ def render_training_tab(
 
     latest_exported_dataset = st.session_state.get(LAST_EXPORTED_DATASET_KEY)
     latest_training_result = st.session_state.get(LAST_TRAINING_RESULT_KEY)
+    active_training_job = get_training_job(
+        str(st.session_state.get(ACTIVE_TRAINING_JOB_KEY, ""))
+    )
+
+    if active_training_job and active_training_job.status == "completed":
+        st.session_state[LAST_TRAINING_RESULT_KEY] = build_training_result_payload(
+            active_training_job
+        )
+        latest_training_result = st.session_state[LAST_TRAINING_RESULT_KEY]
+        st.session_state[ACTIVE_TRAINING_JOB_KEY] = ""
+        active_training_job = None
+    elif active_training_job and active_training_job.status == "failed":
+        st.error(
+            f"Training gagal di epoch {active_training_job.current_epoch}/{active_training_job.total_epochs}: "
+            f"{active_training_job.error or active_training_job.message}"
+        )
+        st.session_state[ACTIVE_TRAINING_JOB_KEY] = ""
 
     if latest_exported_dataset:
         st.success(
@@ -582,6 +689,13 @@ def render_training_tab(
                 st.session_state[MODEL_SOURCE_KEY] = "trained"
                 st.session_state[TRAINED_MODEL_KEY] = str(Path(best_model_path).resolve())
                 st.rerun()
+
+    training_running = active_training_job is not None and active_training_job.status in {
+        "queued",
+        "running",
+    }
+    if training_running and active_training_job is not None:
+        render_training_job_status(active_training_job)
 
     st.markdown("#### Sumber Export Label Studio")
     upload_tab, api_tab = st.tabs(["Upload ZIP", "Export via API"])
@@ -604,7 +718,12 @@ def render_training_tab(
             key="upload_train_split",
         )
 
-        if st.button("Gunakan ZIP upload", type="primary", key="prepare_uploaded_export"):
+        if st.button(
+            "Gunakan ZIP upload",
+            type="primary",
+            key="prepare_uploaded_export",
+            disabled=training_running,
+        ):
             if uploaded_export is None:
                 st.error("Upload file ZIP hasil export Label Studio dulu.")
             else:
@@ -716,7 +835,12 @@ def render_training_tab(
                 key="api_export_timeout",
             )
 
-        if st.button("Export YOLO dan siapkan dataset", type="primary", key="prepare_api_export"):
+        if st.button(
+            "Export YOLO dan siapkan dataset",
+            type="primary",
+            key="prepare_api_export",
+            disabled=training_running,
+        ):
             if not label_studio_url.strip() or not api_key.strip():
                 st.error("URL dan API key Label Studio wajib diisi sebelum export.")
             else:
@@ -790,66 +914,118 @@ def render_training_tab(
     run_name = st.text_input(
         "Nama run training",
         value=f"train_{Path(active_model_path).stem}",
+        disabled=training_running,
     )
     epochs_col, batch_col, img_col, patience_col = st.columns(4)
     with epochs_col:
-        epochs = int(st.number_input("Epochs", min_value=1, max_value=1000, value=50))
+        epochs = int(
+            st.number_input(
+                "Epochs",
+                min_value=1,
+                max_value=1000,
+                value=50,
+                disabled=training_running,
+            )
+        )
     with batch_col:
-        batch_size = int(st.number_input("Batch size", min_value=1, max_value=256, value=16))
+        batch_size = int(
+            st.number_input(
+                "Batch size",
+                min_value=1,
+                max_value=256,
+                value=16,
+                disabled=training_running,
+            )
+        )
     with img_col:
         image_size = int(
-            st.selectbox("Image size", options=[320, 416, 512, 640, 768, 960, 1280], index=3)
+            st.selectbox(
+                "Image size",
+                options=[320, 416, 512, 640, 768, 960, 1280],
+                index=3,
+                disabled=training_running,
+            )
         )
     with patience_col:
-        patience = int(st.number_input("Patience", min_value=0, max_value=200, value=20))
+        patience = int(
+            st.number_input(
+                "Patience",
+                min_value=0,
+                max_value=200,
+                value=20,
+                disabled=training_running,
+            )
+        )
 
-    device = st.text_input(
-        "Device training",
-        value="auto",
-        help="Contoh: auto, cpu, 0, 0,1",
-    )
+    device_options = list_training_device_options()
+    device_option_lookup = {value: label for value, label in device_options}
+    extra_param_col1, extra_param_col2, extra_param_col3, extra_param_col4 = st.columns(4)
+    with extra_param_col1:
+        device_selection = st.selectbox(
+            "Device training",
+            options=list(device_option_lookup),
+            format_func=lambda value: device_option_lookup[value],
+            disabled=training_running,
+        )
+    with extra_param_col2:
+        workers = int(
+            st.number_input(
+                "Workers",
+                min_value=0,
+                max_value=32,
+                value=8,
+                disabled=training_running,
+            )
+        )
+    with extra_param_col3:
+        optimizer = st.selectbox(
+            "Optimizer",
+            options=["auto", "SGD", "Adam", "AdamW"],
+            disabled=training_running,
+        )
+    with extra_param_col4:
+        learning_rate = float(
+            st.number_input(
+                "Learning rate",
+                min_value=0.0001,
+                max_value=1.0,
+                value=0.01,
+                step=0.0005,
+                format="%.4f",
+                disabled=training_running,
+            )
+        )
 
     if selected_dataset.labeled_images == 0:
         st.warning("Dataset ini belum punya file label. Training tidak dijalankan.")
         return
 
-    if st.button("Mulai training YOLO", type="primary"):
+    if training_running:
+        st.info("Training sedang berjalan. Progress di-refresh otomatis setiap 2 detik.")
+    if st.button("Mulai training YOLO", type="primary", disabled=training_running):
         try:
-            with st.spinner("Training YOLO sedang berjalan..."):
-                training_result = train_yolo_model(
-                    dataset_yaml_path=selected_dataset.data_yaml_path,
-                    model_path=active_model_path,
-                    runs_dir=config.training_runs_dir,
-                    run_name=run_name,
-                    epochs=epochs,
-                    image_size=image_size,
-                    batch_size=batch_size,
-                    patience=patience,
-                    device=device,
-                )
-            st.session_state[LAST_TRAINING_RESULT_KEY] = {
-                "run_dir": str(training_result.run_dir.resolve()),
-                "best_model_path": (
-                    str(training_result.best_model_path.resolve())
-                    if training_result.best_model_path
-                    else ""
-                ),
-                "last_model_path": (
-                    str(training_result.last_model_path.resolve())
-                    if training_result.last_model_path
-                    else ""
-                ),
-                "results_path": (
-                    str(training_result.results_path.resolve())
-                    if training_result.results_path
-                    else ""
-                ),
-                "dataset_yaml_path": str(training_result.dataset_yaml_path.resolve()),
-                "source_model_path": training_result.source_model_path,
-            }
+            started_job = start_training_job(
+                dataset_yaml_path=selected_dataset.data_yaml_path,
+                model_path=active_model_path,
+                runs_dir=config.training_runs_dir,
+                run_name=run_name,
+                epochs=epochs,
+                image_size=image_size,
+                batch_size=batch_size,
+                patience=patience,
+                device_selection=device_selection,
+                workers=workers,
+                optimizer=optimizer,
+                learning_rate=learning_rate,
+            )
+            st.session_state[ACTIVE_TRAINING_JOB_KEY] = started_job.job_id
             st.rerun()
         except Exception as error:  # pragma: no cover - depends on local runtime env
             st.error(f"Gagal menjalankan training YOLO: {error}")
+
+    if training_running:
+        time.sleep(2)
+        st.rerun()
 
 
 def main() -> None:

@@ -6,5 +6,6 @@ numpy>=1.26.4
 pandas>=2.2.3
 av>=14.0.0
 python-dotenv>=1.0.1
+psutil>=6.1.0
 label-studio>=1.13.0
 label-studio-sdk>=2.0.0,<3.0.0

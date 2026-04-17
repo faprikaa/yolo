@@ -173,7 +173,7 @@ Contoh workflow `Export via API`:
    - membuat `data.yaml`
    - menyimpan dataset siap train ke `data/datasets/`
 6. pilih dataset yang ingin dipakai
-7. atur parameter training
+7. atur parameter training seperti `epochs`, `batch size`, `image size`, `patience`, `optimizer`, `learning rate`, `workers`, dan `device`
 8. klik `Mulai training YOLO`
 
 ## 11. Hasil training
@@ -191,6 +191,7 @@ Setelah training selesai:
 - model baru otomatis terdeteksi oleh selector sidebar pada rerun berikutnya
 - kamu bisa klik tombol `Pakai best.pt sebagai model aktif`
 - atau pilih sendiri dari opsi `Model hasil training`
+- selama training berjalan, tab `Training` menampilkan progress epoch, metric terakhir, dan resource usage CPU/RAM/GPU
 
 ## 12. Struktur dataset hasil export
 

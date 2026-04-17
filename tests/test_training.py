@@ -7,8 +7,11 @@ from zipfile import ZipFile
 from yolo_dashboard.training import (
     discover_trained_models,
     list_base_model_names,
+    list_training_device_options,
     list_prepared_datasets,
+    normalize_training_device,
     prepare_label_studio_yolo_dataset,
+    read_training_progress,
 )
 
 
@@ -69,3 +72,31 @@ def test_base_models_include_yolo11_and_yolov8() -> None:
 
     assert "yolo11n.pt" in base_models
     assert "yolov8n.pt" in base_models
+
+
+def test_normalize_training_device_supports_cpu_and_gpu() -> None:
+    assert normalize_training_device("auto") == ("", "Auto")
+    assert normalize_training_device("cpu") == ("cpu", "CPU")
+    assert normalize_training_device("gpu:1") == ("1", "GPU 1")
+
+
+def test_list_training_device_options_always_contains_auto_and_cpu() -> None:
+    device_options = list_training_device_options()
+
+    assert ("auto", "Auto") in device_options
+    assert ("cpu", "CPU") in device_options
+
+
+def test_read_training_progress_reads_results_csv(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "train_demo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    results_path = run_dir / "results.csv"
+    results_path.write_text(
+        "epoch,train/loss\n0,1.20\n1,0.95\n2,0.80\n",
+        encoding="utf-8",
+    )
+
+    progress = read_training_progress(run_dir)
+
+    assert progress["completed_epochs"] == 3
+    assert progress["results_path"] == results_path

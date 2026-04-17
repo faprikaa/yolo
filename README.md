@@ -19,6 +19,7 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - Workflow Label Studio berbasis `pip`, bukan bergantung Docker
 - Menu training untuk upload/export dataset YOLO, split train/val, dan start training
 - Selector model untuk base model YOLO11/YOLOv8 dan model hasil training sendiri
+- Tab training dengan parameter training, pilihan device `GPU 0` / `GPU 1` / `CPU`, progress epoch, dan resource usage
 
 ## Struktur project
 

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import csv
 import json
+import os
 import random
 import shutil
+import threading
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from zipfile import ZipFile
 
 
@@ -23,6 +28,8 @@ DEFAULT_BASE_MODELS = (
     "yolov8l.pt",
     "yolov8x.pt",
 )
+_TRAINING_JOBS: dict[str, "TrainingJobState"] = {}
+_TRAINING_JOBS_LOCK = threading.Lock()
 
 
 def _timestamp_slug() -> str:
@@ -43,6 +50,36 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def list_base_model_names() -> list[str]:
     return list(DEFAULT_BASE_MODELS)
+
+
+def list_training_device_options() -> list[tuple[str, str]]:
+    options = [("auto", "Auto"), ("cpu", "CPU")]
+
+    try:
+        import torch
+    except Exception:
+        return options
+
+    if not torch.cuda.is_available():
+        return options
+
+    for index in range(torch.cuda.device_count()):
+        options.append((f"gpu:{index}", f"GPU {index} - {torch.cuda.get_device_name(index)}"))
+    return options
+
+
+def normalize_training_device(selection: str) -> tuple[str, str]:
+    normalized = selection.strip().lower()
+    if not normalized or normalized == "auto":
+        return "", "Auto"
+    if normalized == "cpu":
+        return "cpu", "CPU"
+    if normalized.startswith("gpu:"):
+        device_index = normalized.split(":", maxsplit=1)[1].strip()
+        if not device_index.isdigit():
+            raise RuntimeError(f"Format device GPU tidak valid: {selection}")
+        return device_index, f"GPU {device_index}"
+    raise RuntimeError(f"Pilihan device tidak dikenali: {selection}")
 
 
 @dataclass(frozen=True)
@@ -72,6 +109,27 @@ class TrainingArtifact:
     results_path: Path | None
     dataset_yaml_path: Path
     source_model_path: str
+
+
+@dataclass
+class TrainingJobState:
+    job_id: str
+    run_name: str
+    run_dir: Path
+    dataset_yaml_path: Path
+    source_model_path: str
+    device_label: str
+    total_epochs: int
+    status: str
+    message: str
+    current_epoch: int
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    best_model_path: Path | None = None
+    last_model_path: Path | None = None
+    results_path: Path | None = None
 
 
 def discover_trained_models(
@@ -115,6 +173,137 @@ def list_prepared_datasets(dataset_root: Path) -> list[PreparedDataset]:
         reverse=True,
     )
     return [_load_prepared_dataset(metadata_path) for metadata_path in metadata_paths]
+
+
+def start_training_job(
+    dataset_yaml_path: Path,
+    model_path: str,
+    runs_dir: Path,
+    run_name: str,
+    epochs: int,
+    image_size: int,
+    batch_size: int,
+    patience: int,
+    device_selection: str,
+    workers: int,
+    optimizer: str,
+    learning_rate: float,
+) -> TrainingJobState:
+    resolved_run_name = _ensure_unique_run_name(runs_dir, run_name.strip())
+    run_dir = runs_dir / resolved_run_name
+    normalized_device, device_label = normalize_training_device(device_selection)
+    job_id = _timestamp_slug()
+
+    job_state = TrainingJobState(
+        job_id=job_id,
+        run_name=resolved_run_name,
+        run_dir=run_dir,
+        dataset_yaml_path=dataset_yaml_path,
+        source_model_path=model_path,
+        device_label=device_label,
+        total_epochs=int(epochs),
+        status="queued",
+        message="Menunggu training dimulai",
+        current_epoch=0,
+        created_at=_iso_now(),
+    )
+    with _TRAINING_JOBS_LOCK:
+        _TRAINING_JOBS[job_id] = job_state
+
+    worker = threading.Thread(
+        target=_run_training_job,
+        kwargs={
+            "job_id": job_id,
+            "dataset_yaml_path": dataset_yaml_path,
+            "model_path": model_path,
+            "runs_dir": runs_dir,
+            "run_name": resolved_run_name,
+            "epochs": int(epochs),
+            "image_size": int(image_size),
+            "batch_size": int(batch_size),
+            "patience": int(patience),
+            "device": normalized_device,
+            "workers": int(workers),
+            "optimizer": optimizer,
+            "learning_rate": float(learning_rate),
+        },
+        daemon=True,
+    )
+    worker.start()
+    return deepcopy(job_state)
+
+
+def get_training_job(job_id: str) -> TrainingJobState | None:
+    if not job_id:
+        return None
+
+    with _TRAINING_JOBS_LOCK:
+        job_state = deepcopy(_TRAINING_JOBS.get(job_id))
+    if job_state is None:
+        return None
+
+    progress_snapshot = read_training_progress(job_state.run_dir)
+    job_state.current_epoch = int(progress_snapshot["completed_epochs"])
+    job_state.results_path = progress_snapshot["results_path"]
+    weights_dir = job_state.run_dir / "weights"
+    best_model_path = weights_dir / "best.pt"
+    last_model_path = weights_dir / "last.pt"
+    job_state.best_model_path = best_model_path if best_model_path.exists() else None
+    job_state.last_model_path = last_model_path if last_model_path.exists() else None
+    return job_state
+
+
+def get_resource_usage() -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "cpu_percent": None,
+        "memory_percent": None,
+        "process_memory_gb": None,
+        "gpus": [],
+    }
+
+    try:
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        snapshot["cpu_percent"] = float(psutil.cpu_percent(interval=None))
+        snapshot["memory_percent"] = float(psutil.virtual_memory().percent)
+        snapshot["process_memory_gb"] = float(process.memory_info().rss / (1024 ** 3))
+    except Exception:
+        pass
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpus: list[dict[str, Any]] = []
+            for index in range(torch.cuda.device_count()):
+                with torch.cuda.device(index):
+                    free_bytes, total_bytes = torch.cuda.mem_get_info()
+                used_bytes = total_bytes - free_bytes
+                gpus.append(
+                    {
+                        "index": index,
+                        "name": torch.cuda.get_device_name(index),
+                        "used_gb": round(used_bytes / (1024 ** 3), 2),
+                        "total_gb": round(total_bytes / (1024 ** 3), 2),
+                        "memory_percent": round((used_bytes / total_bytes) * 100, 2)
+                        if total_bytes
+                        else 0.0,
+                    }
+                )
+            snapshot["gpus"] = gpus
+    except Exception:
+        pass
+
+    return snapshot
+
+
+def read_training_progress(run_dir: Path) -> dict[str, Any]:
+    results_path = run_dir / "results.csv"
+    return {
+        "completed_epochs": _read_completed_epochs(run_dir),
+        "results_path": results_path if results_path.exists() else None,
+    }
 
 
 def prepare_label_studio_yolo_dataset(
@@ -203,6 +392,9 @@ def train_yolo_model(
     batch_size: int,
     patience: int,
     device: str,
+    workers: int,
+    optimizer: str,
+    learning_rate: float,
 ) -> TrainingArtifact:
     if not dataset_yaml_path.exists():
         raise RuntimeError(f"File dataset YAML tidak ditemukan: {dataset_yaml_path}")
@@ -218,11 +410,17 @@ def train_yolo_model(
         "imgsz": int(image_size),
         "batch": int(batch_size),
         "patience": int(patience),
+        "workers": int(workers),
         "project": str(runs_dir),
         "name": run_name.strip() or f"train_{_timestamp_slug()}",
         "exist_ok": False,
         "verbose": False,
     }
+    normalized_optimizer = optimizer.strip()
+    if normalized_optimizer and normalized_optimizer.lower() != "auto":
+        train_kwargs["optimizer"] = normalized_optimizer
+    if learning_rate > 0:
+        train_kwargs["lr0"] = float(learning_rate)
     normalized_device = device.strip()
     if normalized_device and normalized_device.lower() != "auto":
         train_kwargs["device"] = normalized_device
@@ -250,6 +448,92 @@ def train_yolo_model(
         dataset_yaml_path=dataset_yaml_path,
         source_model_path=model_path,
     )
+
+
+def _run_training_job(
+    job_id: str,
+    dataset_yaml_path: Path,
+    model_path: str,
+    runs_dir: Path,
+    run_name: str,
+    epochs: int,
+    image_size: int,
+    batch_size: int,
+    patience: int,
+    device: str,
+    workers: int,
+    optimizer: str,
+    learning_rate: float,
+) -> None:
+    _update_training_job(
+        job_id,
+        status="running",
+        message="Training sedang berjalan",
+        started_at=_iso_now(),
+    )
+    try:
+        artifact = train_yolo_model(
+            dataset_yaml_path=dataset_yaml_path,
+            model_path=model_path,
+            runs_dir=runs_dir,
+            run_name=run_name,
+            epochs=epochs,
+            image_size=image_size,
+            batch_size=batch_size,
+            patience=patience,
+            device=device,
+            workers=workers,
+            optimizer=optimizer,
+            learning_rate=learning_rate,
+        )
+        _update_training_job(
+            job_id,
+            status="completed",
+            message="Training selesai",
+            current_epoch=int(epochs),
+            finished_at=_iso_now(),
+            best_model_path=artifact.best_model_path,
+            last_model_path=artifact.last_model_path,
+            results_path=artifact.results_path,
+        )
+    except Exception as error:
+        _update_training_job(
+            job_id,
+            status="failed",
+            message="Training gagal",
+            finished_at=_iso_now(),
+            error=str(error),
+        )
+
+
+def _update_training_job(job_id: str, **updates: Any) -> None:
+    with _TRAINING_JOBS_LOCK:
+        job_state = _TRAINING_JOBS.get(job_id)
+        if job_state is None:
+            return
+        for key, value in updates.items():
+            setattr(job_state, key, value)
+
+
+def _ensure_unique_run_name(runs_dir: Path, requested_name: str) -> str:
+    base_name = requested_name or f"train_{_timestamp_slug()}"
+    candidate = base_name
+    suffix = 2
+    while (runs_dir / candidate).exists():
+        candidate = f"{base_name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _read_completed_epochs(run_dir: Path) -> int:
+    results_path = run_dir / "results.csv"
+    if not results_path.exists():
+        return 0
+
+    with results_path.open("r", encoding="utf-8", newline="") as results_file:
+        reader = csv.reader(results_file)
+        rows = [row for row in reader if row]
+    return max(0, len(rows) - 1)
 
 
 def _find_label_studio_export_root(root: Path) -> Path:

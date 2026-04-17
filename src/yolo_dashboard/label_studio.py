@@ -32,6 +32,12 @@ class LabelStudioExportArtifact:
     created_at: str
 
 
+@dataclass(frozen=True)
+class LabelStudioConnectionStatus:
+    base_url: str
+    project_count: int
+
+
 def build_label_config(labels: list[str]) -> str:
     palette = [
         "#1abc9c",
@@ -170,6 +176,13 @@ class LabelStudioClient:
             for project in self._as_list(projects)
         ]
         return sorted(normalized_projects, key=lambda project: project.title.casefold())
+
+    def test_connection(self) -> LabelStudioConnectionStatus:
+        projects = self.list_projects()
+        return LabelStudioConnectionStatus(
+            base_url=self.base_url,
+            project_count=len(projects),
+        )
 
     def get_or_create_project(
         self,
