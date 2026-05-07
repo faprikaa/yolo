@@ -450,7 +450,14 @@ def render_live_camera_tab(
     context = webrtc_streamer(
         key="yolo-live-camera",
         mode=WebRtcMode.SENDRECV,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720},
+                "frameRate": {"ideal": 30},
+            },
+            "audio": False,
+        },
         async_processing=True,
         video_processor_factory=LiveYOLOProcessor,
     )
