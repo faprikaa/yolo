@@ -37,9 +37,11 @@ from yolo_dashboard.training import (
     TrainingJobState,
     TrainedModelArtifact,
     discover_trained_models,
+    download_base_model,
     get_resource_usage,
     get_training_job,
     inspect_existing_yolo_dataset,
+    is_base_model_downloaded,
     list_base_model_names,
     list_training_device_options,
     list_prepared_datasets,
@@ -224,6 +226,29 @@ def resolve_selected_model_path(
     return str(st.session_state.get(BASE_MODEL_KEY, base_models[0]))
 
 
+def _render_model_download_panel() -> None:
+    models = list_base_model_names()
+    for model_name in models:
+        col_name, col_status, col_btn = st.columns([3, 2, 2])
+        downloaded = is_base_model_downloaded(model_name)
+        with col_name:
+            st.text(model_name)
+        with col_status:
+            if downloaded:
+                st.success("Tersedia", icon="✓")
+            else:
+                st.warning("Belum download", icon="!")
+        with col_btn:
+            if not downloaded:
+                if st.button("Download", key=f"dl_{model_name}"):
+                    with st.spinner(f"Downloading {model_name}..."):
+                        try:
+                            download_base_model(model_name)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Gagal: {exc}")
+
+
 def render_model_selector(
     config: AppConfig,
     trained_models: list[TrainedModelArtifact],
@@ -244,6 +269,8 @@ def render_model_selector(
             options=list_base_model_names(),
             key=BASE_MODEL_KEY,
         )
+        with st.expander("Download base model"):
+            _render_model_download_panel()
     elif st.session_state[MODEL_SOURCE_KEY] == "trained":
         trained_options = [str(artifact.path.resolve()) for artifact in trained_models]
         trained_lookup = {

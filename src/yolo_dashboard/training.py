@@ -53,6 +53,29 @@ def list_base_model_names() -> list[str]:
     return list(DEFAULT_BASE_MODELS)
 
 
+_ULTRALYTICS_CACHE_DIRS = (
+    Path.home() / ".config" / "Ultralytics" / "assets",
+    Path.home() / "AppData" / "Roaming" / "Ultralytics" / "assets",
+)
+
+
+def is_base_model_downloaded(model_name: str) -> bool:
+    if Path(model_name).exists():
+        return True
+    for cache_dir in _ULTRALYTICS_CACHE_DIRS:
+        if (cache_dir / model_name).exists():
+            return True
+    return False
+
+
+def download_base_model(model_name: str) -> None:
+    if model_name not in DEFAULT_BASE_MODELS:
+        raise ValueError(f"Model tidak dikenal: {model_name}")
+    from ultralytics import YOLO
+    YOLO(model_name)
+
+
+
 def list_training_device_options() -> list[tuple[str, str]]:
     options = [("auto", "Auto"), ("cpu", "CPU")]
 
