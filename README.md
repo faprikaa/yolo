@@ -21,6 +21,20 @@ Dashboard Streamlit ini sekarang mendukung alur end-to-end berikut:
 - Menu training untuk upload/export dataset YOLO, pilih folder dataset lokal, dan start training
 - Selector model untuk base model YOLO11/YOLOv8 dan model hasil training sendiri
 - Tab training dengan parameter training, pilihan device `GPU 0` / `GPU 1` / `CPU`, progress epoch, dan resource usage
+- Verdict OK/NG berbasis jumlah objek per class lewat field `Aturan inspeksi` di sidebar
+- Notebook `notebooks/train_colab_kaggle.ipynb` untuk training di GPU gratis Colab/Kaggle
+
+## Aturan inspeksi
+
+Sidebar punya field `Aturan inspeksi` yang formatnya `label=jumlah`, dipisah koma:
+
+```
+nut_ok=4, nut_missing=0
+```
+
+Frame dinyatakan `OK` kalau semua jumlah cocok, dan `NG` kalau ada yang meleset.
+Verdict tampil di tab `Live Camera` dan `Image Inference`, di atas tabel deteksi.
+Kosongkan field ini untuk mematikan verdict.
 
 ## Model yang tersedia
 

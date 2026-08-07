@@ -17,6 +17,7 @@ import streamlit as st
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from yolo_dashboard.config import AppConfig
+from yolo_dashboard.inspection import inspect_detections, parse_inspection_rule
 from yolo_dashboard.label_studio import (
     LabelStudioClient,
     LabelStudioConnectionStatus,
@@ -107,7 +108,24 @@ def render_capture_gallery(captures) -> None:
             )
 
 
+def render_inspection_verdict(detections: list[Detection]) -> None:
+    rule = st.session_state.get("inspection_rule") or {}
+    if not rule:
+        return
+
+    result = inspect_detections(detections, rule)
+    summary = " | ".join(
+        f"{label}: {count}" for label, count in sorted(result.counts.items())
+    )
+    if result.ok:
+        st.success(f"OK — {summary}")
+    else:
+        st.error(f"NG — {'; '.join(result.issues)}")
+
+
 def render_detection_table(detections: list[Detection]) -> None:
+    render_inspection_verdict(detections)
+
     if not detections:
         st.caption("Belum ada objek terdeteksi pada frame terakhir.")
         return
@@ -1256,6 +1274,16 @@ def main() -> None:
             value="",
             help="Contoh: person, car",
         )
+        inspection_rule_text = st.text_input(
+            "Aturan inspeksi (opsional)",
+            value="",
+            help="Contoh: nut_ok=4, nut_missing=0. Kosongkan untuk mematikan verdict OK/NG.",
+        )
+        try:
+            st.session_state["inspection_rule"] = parse_inspection_rule(inspection_rule_text)
+        except ValueError as error:
+            st.session_state["inspection_rule"] = {}
+            st.error(str(error))
         auto_capture = st.checkbox("Auto capture kamera", value=True)
         capture_interval = st.number_input(
             "Interval auto capture (detik)",
